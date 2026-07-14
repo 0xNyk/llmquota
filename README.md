@@ -38,6 +38,18 @@ ln -sfn "$(pwd)/llmquota" ~/.local/bin/llmquota
 
 Currently a **private** repo while the collectors stabilize. MIT-licensed and structured to go public without a rewrite: no secrets in tree, documented undocumented APIs, fail-soft providers.
 
+## Optional Claude Code statusline
+
+```bash
+# ~/.claude/settings.json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/path/to/llmquota/examples/statusline.sh"
+  }
+}
+```
+
 ## Related tools
 
 SessionWatcher (menubar), aistat, aiquota, tokmon — peers, not dependencies.
