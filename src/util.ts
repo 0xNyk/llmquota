@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -192,15 +192,42 @@ export async function fetchJson(
 const CACHE_DIR = home(".cache", "llmquota");
 
 export function readCache<T>(key: string, maxAgeMs: number): T | null {
+  return readCacheEntry<T>(key, maxAgeMs)?.data ?? null;
+}
+
+export function readCacheEntry<T>(
+  key: string,
+  maxAgeMs = Number.POSITIVE_INFINITY,
+): { data: T; ageMs: number; cachedAt: number } | null {
   const path = join(CACHE_DIR, `${key}.json`);
   if (!existsSync(path)) return null;
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as { at: number; data: T };
-    if (Date.now() - raw.at > maxAgeMs) return null;
-    return raw.data;
+    const ageMs = Date.now() - raw.at;
+    if (!Number.isFinite(raw.at) || ageMs < 0 || ageMs > maxAgeMs) return null;
+    return { data: raw.data, ageMs, cachedAt: raw.at };
   } catch {
     return null;
   }
+}
+
+export function readLatestCacheEntry<T>(
+  keyPrefix: string,
+  maxAgeMs = Number.POSITIVE_INFINITY,
+): { data: T; ageMs: number; cachedAt: number; key: string } | null {
+  if (!existsSync(CACHE_DIR)) return null;
+  let newest: { data: T; ageMs: number; cachedAt: number; key: string } | null = null;
+  try {
+    for (const file of readdirSync(CACHE_DIR)) {
+      if (!file.startsWith(keyPrefix) || !file.endsWith(".json")) continue;
+      const key = file.slice(0, -5);
+      const hit = readCacheEntry<T>(key, maxAgeMs);
+      if (hit && (!newest || hit.cachedAt > newest.cachedAt)) newest = { ...hit, key };
+    }
+  } catch {
+    return null;
+  }
+  return newest;
 }
 
 export function writeCache<T>(key: string, data: T): void {

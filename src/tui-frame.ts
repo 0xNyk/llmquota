@@ -17,18 +17,24 @@ import {
   YELLOW,
 } from "./tui-ansi.js";
 import {
+  allocateRowBodyHeights,
   computeLayout,
   dormantChip,
   fighterCard,
+  partialRowOffset,
   refPayload,
   zipN,
 } from "./tui-cards.js";
+import { preferredCardBodyH } from "./tui-card-body.js";
+import { anonymousReport, redactPrivateText } from "./tui-anon.js";
 import { heroPick, nextUpQueue, nextUpStrip, refsStrip, busStripLines } from "./tui-chrome.js";
+import { clusterProviderRoutes, providerRouteGroup, sharedRouteGroups, type IndexedProvider } from "./tui-groups.js";
 import { type LoadProgress, loadingScreen, softRefreshBanner, spinnerGlyph } from "./tui-loading.js";
 import {
   availability,
   CARD_MIN_BODY,
   isDormant,
+  isCooldown,
   REFRESH_MS,
   soonestResetSec,
 } from "./tui-model.js";
@@ -36,6 +42,27 @@ import {
 export interface FrameResult {
   screen: string;
   hits: HitRegion[];
+}
+
+function sharedRouteRail(items: IndexedProvider[], cardW: number, gap: number): string {
+  let line = "";
+  for (let i = 0; i < items.length;) {
+    const route = providerRouteGroup(items[i]!.p);
+    let end = i + 1;
+    while (end < items.length && providerRouteGroup(items[end]!.p) === route) end++;
+    const count = end - i;
+    if (i > 0) line += " ".repeat(gap);
+    if (count > 1) {
+      const span = count * cardW + (count - 1) * gap;
+      const names = items.slice(i, end).map(({ p }) => p.displayName.split(" · ")[0]).join(" + ");
+      const label = `╭─ ${CYAN}${BOLD}${route}${RESET}${DIM} route · ${names}${RESET} `;
+      line += `${DIM}${label}${"─".repeat(Math.max(0, span - vlen(label) - 1))}╮${RESET}`;
+    } else {
+      line += " ".repeat(cardW);
+    }
+    i = end;
+  }
+  return line;
 }
 
 export function frame(
@@ -55,6 +82,7 @@ export function frame(
     shoutDraft?: string | null;
     tick?: number;
     nextRefreshIn?: number;
+    anon?: boolean;
   },
 ): FrameResult {
   const tick = opts.tick ?? 0;
@@ -62,6 +90,7 @@ export function frame(
   const showHelp = Boolean(opts.showHelp);
   const showBus = Boolean(opts.showBus);
   const shoutDraft = opts.shoutDraft ?? null;
+  if (opts.anon && report) report = anonymousReport(report);
   const providers = report?.providers ?? [];
   const focusIdx = opts.focus ?? 0;
   const hoverIdx = opts.hover ?? null;
@@ -72,7 +101,13 @@ export function frame(
 
   if (opts.loading && !report && opts.loadProgress) {
     return {
-      screen: loadingScreen(termCols, termRows, opts.loadProgress, tick, opts.error),
+      screen: loadingScreen(
+        termCols,
+        termRows,
+        opts.loadProgress,
+        tick,
+        opts.error && opts.anon ? redactPrivateText(opts.error) : opts.error,
+      ),
       hits: [],
     };
   }
@@ -86,7 +121,10 @@ export function frame(
       ` ${DIM}press r to retry · q to quit${RESET}`,
     ];
     const painted: string[] = [];
-    for (let r = 0; r < termRows; r++) painted.push(paintLine(msg[r] ?? "", termCols, r, tick, termRows));
+    for (let r = 0; r < termRows; r++) {
+      const line = opts.anon ? redactPrivateText(msg[r] ?? "") : msg[r] ?? "";
+      painted.push(paintLine(line, termCols, r, tick, termRows));
+    }
     return { screen: painted.join("\n"), hits: [] };
   }
 
@@ -109,22 +147,34 @@ export function frame(
     }
     return a.i - b.i;
   });
-
-  const fighters = indexed.filter((x) => !isDormant(x.p));
+  const clustered = clusterProviderRoutes(indexed);
+  const fighters = clustered.filter((x) => !isDormant(x.p));
   const dormant = indexed.filter((x) => isDormant(x.p));
 
   const dormantLines = dormant.length ? (showDormant ? 1 + dormant.length : 1) : 0;
-  const refLines = report
+  const refLines = !opts.anon && report
     ? Math.min(1, providers.some((p) => refPayload(p)) ? 1 : 0)
     : 0;
   const nextUpLines =
     report && nextUpQueue(providers, report.checkedAt).length > 0 ? 1 : 0;
   const softRefreshLines = report && opts.loading && opts.loadProgress?.soft ? 1 : 0;
   const busLines = showBus || shoutDraft != null ? (shoutDraft != null ? 1 : 6) : 0;
-  // header + soft? + hero + next? + refs? + blank + bus? + dormant? + footer
-  const chrome =
-    1 + softRefreshLines + 1 + nextUpLines + refLines + 1 + busLines + dormantLines + 1;
-
+  // First pass establishes columns; second pass reserves route rails above grouped rows.
+  const baseChrome = 1 + softRefreshLines + 1 + nextUpLines + refLines + 1 + busLines + dormantLines + 1;
+  const baseLayout = computeLayout(fighters.length || 1, baseChrome);
+  const sharedProviders = new Set(sharedRouteGroups(fighters).map((g) => g.provider));
+  const rowHasSharedRoute = (slice: IndexedProvider[]): boolean => {
+    for (let i = 1; i < slice.length; i++) {
+      const route = providerRouteGroup(slice[i]!.p);
+      if (sharedProviders.has(route) && route === providerRouteGroup(slice[i - 1]!.p)) return true;
+    }
+    return false;
+  };
+  let routeRailRows = 0;
+  for (let i = 0; i < fighters.length; i += baseLayout.columns) {
+    if (rowHasSharedRoute(fighters.slice(i, i + baseLayout.columns))) routeRailRows++;
+  }
+  const chrome = baseChrome + routeRailRows;
   const layout = computeLayout(fighters.length || 1, chrome);
   const { cols, rows, columns, inner, margin, gap, bodyH } = layout;
   const cardW = inner + 2;
@@ -147,12 +197,7 @@ export function frame(
 
   const readyN = report ? report.providers.filter((p) => availability(p) === "ready").length : 0;
   const soonN = report ? report.providers.filter((p) => availability(p) === "soon").length : 0;
-  const koN = report
-    ? report.providers.filter((p) => {
-        const a = availability(p);
-        return a === "tired" || a === "limping";
-      }).length
-    : 0;
+  const koN = report ? report.providers.filter(isCooldown).length : 0;
   const tally =
     report
       ? `${GREEN}${readyN}▮${RESET}${DIM}/${RESET}${YELLOW}${soonN}◐${RESET}${DIM}/${RESET}${RED}${koN}✕${RESET}`
@@ -165,6 +210,7 @@ export function frame(
         : "") +
       `${DIM}  ${opts.lastRefresh || ""}${RESET}`,
   );
+  if (opts.anon) out[0] += `  ${CYAN}${BOLD}ANON${RESET}`;
 
   if (report) {
     if (opts.loading && opts.loadProgress?.soft) {
@@ -185,7 +231,7 @@ export function frame(
       });
     }
 
-    const strip = refsStrip(providers, cols, focusIdx);
+    const strip = opts.anon ? { lines: [], hits: [] } : refsStrip(providers, cols, focusIdx);
     const stripRow = out.length;
     out.push(...strip.lines);
     for (const h of strip.hits) {
@@ -204,43 +250,57 @@ export function frame(
         `  ${YELLOW}shout ›${RESET} ${WHITE}${shoutDraft}${RESET}${DIM}█${RESET}  ${FG_MUTE}↵ send · esc cancel${RESET}`,
       );
     } else if (showBus) {
-      const lines = busStripLines(cols, 6);
+      const lines = opts.anon
+        ? [`  ${CYAN}bus${RESET}  ${DIM}hidden in anonymous mode${RESET}`]
+        : busStripLines(cols, 6);
       while (lines.length < 6) lines.push("");
       out.push(...lines);
     }
 
-    const built = fighters.map(({ p, i }) => ({
-      ...fighterCard(
-        p,
-        inner,
-        bodyH,
-        focusIdx === i,
-        hoverIdx === i,
-        tick,
-        report.checkedAt,
-      ),
-      index: i,
-    }));
-
     const rowGap =
       layout.cardRows > 1 &&
-      rows - (1 + softRefreshLines + 1 + nextUpLines + refLines + 1 + dormantLines + 1) >=
-        layout.cardRows * (CARD_MIN_BODY + 4);
+      rows - chrome >= layout.cardRows * (CARD_MIN_BODY + 3) - 1;
 
-    if (built.length) {
-      for (let i = 0; i < built.length; i += columns) {
+    const desiredRowHeights: number[] = [];
+    for (let i = 0; i < fighters.length; i += columns) {
+      const slice = fighters.slice(i, i + columns);
+      desiredRowHeights.push(Math.max(...slice.map(({ p, i: providerIndex }) =>
+        preferredCardBodyH(p, inner - 2, focusIdx === providerIndex, tick, report.checkedAt))));
+    }
+    const cardBodyBudget = rows - chrome - layout.cardRows * 2 - (rowGap ? layout.cardRows - 1 : 0);
+    const rowBodyHeights = allocateRowBodyHeights(desiredRowHeights, cardBodyBudget);
+
+    if (fighters.length) {
+      for (let i = 0, rowIndex = 0; i < fighters.length; i += columns, rowIndex++) {
         if (i > 0 && rowGap) out.push("");
-        const slice = built.slice(i, i + columns);
-        const cardTop = out.length;
+        const rowBodyH = rowBodyHeights[rowIndex] ?? bodyH;
+        const rowFighters = fighters.slice(i, i + columns);
+        const slice = rowFighters.map(({ p, i: providerIndex }) => ({
+          ...fighterCard(
+            p,
+            inner,
+            rowBodyH,
+            focusIdx === providerIndex,
+            hoverIdx === providerIndex,
+            tick,
+            report.checkedAt,
+          ),
+          index: providerIndex,
+        }));
+        const rowOffset = partialRowOffset(slice.length, columns, cardW, gap);
+        if (rowHasSharedRoute(rowFighters)) {
+          out.push(indent + " ".repeat(rowOffset) + sharedRouteRail(rowFighters, cardW, gap));
+        }
+        const actualCardTop = out.length;
         const lineCards: string[][] = slice.map((c) => c.lines);
-        out.push(...zipN(lineCards, gap, out.length).map((l) => indent + l));
+        out.push(...zipN(lineCards, gap, out.length).map((l) => indent + " ".repeat(rowOffset) + l));
 
         for (let c = 0; c < slice.length; c++) {
           const card = slice[c]!;
-          const x0 = margin + c * (cardW + gap);
+          const x0 = margin + rowOffset + c * (cardW + gap);
           const x1 = x0 + cardW;
-          const y0 = cardTop;
-          const y1 = cardTop + bodyH + 2;
+          const y0 = actualCardTop;
+          const y1 = actualCardTop + rowBodyH + 2;
           hits.push({
             x0,
             x1,
@@ -249,7 +309,7 @@ export function frame(
             action: { kind: "focus", index: card.index },
           });
           if (card.refBodyRow != null) {
-            const ry = cardTop + 1 + card.refBodyRow;
+            const ry = actualCardTop + 1 + card.refBodyRow;
             hits.push({
               x0,
               x1,
@@ -322,6 +382,7 @@ export function frame(
     { label: `${CYAN}o${RESET}${DIM}pen${RESET}`, kind: "open" as const },
     { label: `${CYAN}s${RESET}${DIM}hout${RESET}`, kind: null },
     { label: `${CYAN}b${RESET}${DIM}us${RESET}`, kind: null },
+    { label: `${CYAN}a${RESET}${DIM}non${RESET}`, kind: null },
     { label: `${CYAN}c${RESET}${DIM}opy${RESET}`, kind: "copy-focus" as const },
     { label: `${CYAN}h${RESET}${DIM} side${RESET}`, kind: "dormant" as const },
     { label: `${CYAN}?${RESET}${DIM}help${RESET}`, kind: null },
@@ -373,6 +434,7 @@ export function frame(
       "│  u              open usage profile URL   │",
       "│  s              shout to ring bus        │",
       "│  b              toggle bus strip         │",
+      "│  a              toggle anonymous mode    │",
       "│  ↵ / c          copy focused ref         │",
       "│  j/k tab 1-9    move focus               │",
       "│  h              toggle sidelined         │",
@@ -402,7 +464,9 @@ export function frame(
   }
 
   const painted: string[] = [];
-  for (let r = 0; r < rows; r++) painted.push(paintLine(out[r] ?? "", cols, r, tick, rows));
+  for (let r = 0; r < rows; r++) {
+    const line = opts.anon ? redactPrivateText(out[r] ?? "") : out[r] ?? "";
+    painted.push(paintLine(line, cols, r, tick, rows));
+  }
   return { screen: painted.join("\n"), hits };
 }
-

@@ -642,7 +642,18 @@ export async function collectClaudeAll(
     const snaps = await Promise.all(batch.map((t) => collectClaudeProfile(t, opts)));
     out.push(...snaps);
   }
-  return out;
+  return reconcileClaudeActiveProfile(out);
+}
+
+/** Keep a configured active profile when usable; otherwise surface a signed-in fallback. */
+export function reconcileClaudeActiveProfile(snaps: ProviderSnapshot[]): ProviderSnapshot[] {
+  if (snaps.some((p) => p.active && p.auth === "ok")) return snaps;
+  const fallback =
+    snaps.find((p) => p.profileId === "default" && p.auth === "ok") ||
+    snaps.find((p) => p.auth === "ok");
+  if (!fallback) return snaps;
+  for (const p of snaps) p.active = p === fallback;
+  return snaps;
 }
 
 /** Back-compat: single default (or first) Claude snapshot. */

@@ -96,6 +96,8 @@ export interface CliOptions {
   copy?: string | null;
   /** Disable SGR mouse tracking in the arena TUI */
   noMouse?: boolean;
+  /** Hide personal identifiers in TUI screenshots. */
+  anon?: boolean;
   /** `llmquota scan` — list detected CLIs */
   scan?: boolean;
 }

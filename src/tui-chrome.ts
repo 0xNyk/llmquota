@@ -21,6 +21,7 @@ import {
   availability,
   formatCompactDur,
   isDormant,
+  isCooldown,
   soonestResetSec,
   type Avail,
 } from "./tui-model.js";
@@ -35,6 +36,7 @@ export interface NextUpEntry {
   name: string;
   sec: number;
   avail: Avail;
+  cooldown: boolean;
 }
 
 export function heroPick(report: RosterReport, cols: number, tick: number): string {
@@ -68,7 +70,7 @@ export function nextUpQueue(
     if (avail === "ready") continue;
     const sec = soonestResetSec(p, checkedAt);
     if (sec == null) continue;
-    entries.push({ index: i, name: p.displayName, sec, avail });
+    entries.push({ index: i, name: p.displayName, sec, avail, cooldown: isCooldown(p) });
   }
   entries.sort((a, b) => a.sec - b.sec || a.name.localeCompare(b.name));
   return entries;
@@ -95,13 +97,14 @@ export function nextUpStrip(
     const clock = formatCompactDur(e.sec);
     const color = e.avail === "soon" ? YELLOW : e.avail === "limping" ? YELLOW : RED;
     const focused = e.index === focusIdx;
+    const state = e.cooldown ? " cooldown" : "";
     const body = focused
-      ? `${CYAN}${BOLD}[${rank}] ${e.name} ${clock}${RESET}`
-      : `${DIM}${rank}${RESET} ${color}${e.name}${RESET} ${DIM}${clock}${RESET}`;
+      ? `${CYAN}${BOLD}[${rank}] ${e.name}${state} ${clock}${RESET}`
+      : `${DIM}${rank}${RESET} ${color}${e.name}${state}${RESET} ${DIM}${clock}${RESET}`;
     chips.push({
       text: body,
       index: e.index,
-      plainLen: vlen(`[${rank}] ${e.name} ${clock}`),
+      plainLen: vlen(`[${rank}] ${e.name}${state} ${clock}`),
     });
   }
 

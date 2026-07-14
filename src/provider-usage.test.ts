@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { collectClaudeUsageWindows, isClaudeUsagePayload } from "./providers/claude.js";
+import {
+  collectClaudeUsageWindows,
+  isClaudeUsagePayload,
+  reconcileClaudeActiveProfile,
+} from "./providers/claude.js";
 import {
   codexBlockedLimits,
   codexRequestAvailability,
@@ -30,6 +34,7 @@ import {
   hermesUsageScore,
   isNousAccountPayload,
   mergeHermesAuthFallback,
+  nousPurchasedCreditMeter,
 } from "./providers/hermes.js";
 import { pickFighter, primaryMeter } from "./collect.js";
 import { renderRoster } from "./render.js";
@@ -51,6 +56,29 @@ import {
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
   console.log(`ok    ${msg}`);
+}
+
+{
+  const staleSilo = baseSnapshot({ id: "claude", displayName: "Claude · personal", installed: true });
+  staleSilo.profileId = "personal";
+  staleSilo.profileLabel = "personal";
+  staleSilo.active = true;
+  staleSilo.auth = "missing";
+  const signedInDefault = baseSnapshot({ id: "claude", displayName: "Claude", installed: true });
+  signedInDefault.profileId = "default";
+  signedInDefault.profileLabel = "default";
+  signedInDefault.auth = "ok";
+  signedInDefault.active = false;
+  const reconciled = reconcileClaudeActiveProfile([staleSilo, signedInDefault]);
+  assert(reconciled[1]?.active === true && reconciled[0]?.active === false,
+    "Claude signed-in default replaces a stale active silo profile");
+
+  staleSilo.auth = "ok";
+  staleSilo.active = true;
+  signedInDefault.active = false;
+  reconcileClaudeActiveProfile([staleSilo, signedInDefault]);
+  assert(staleSilo.active === true && signedInDefault.active === false,
+    "Claude keeps an authenticated configured silo profile active");
 }
 
 {
@@ -379,8 +407,13 @@ providers: {}
     "Hermes exhausted subscription grant detected");
   assert(/\$2\.25 rollover/.test(windows.find((w) => w.name === "subscription")?.detail || ""),
     "Hermes rollover balance retained");
-  assert(/\$7\.50 usable/.test(windows.find((w) => w.name === "topup")?.detail || ""),
-    "Hermes top-up balance retained without fake percent");
+  assert(/Nous paid credits \$7\.50 remaining · live/.test(
+    windows.find((w) => w.name === "topup")?.detail || ""),
+    "Hermes paid-credit remainder retained without fake percent");
+  assert(/cached 5h ago/.test(nousPurchasedCreditMeter({
+    purchased_credits_remaining: 33.1897,
+  }, 5 * 3600_000)?.detail || ""),
+    "Hermes inactive Nous paid-credit fact includes cache age");
   assert(hermesUsageScore(windows, 7.5) == null,
     "Hermes top-up availability prevents false KO score");
   assert(hermesUsageScore(windows, 0) === 100,
@@ -420,7 +453,7 @@ providers: {}
   });
   assert(accessFallback.find((w) => w.name === "subscription")?.usedPercent === 75,
     "Hermes access entitlement fills missing subscription remainder");
-  assert(/subscription \$5\.00.*purchased \$3\.00/.test(
+  assert(/subscription \$5\.00.*paid \$3\.00 remaining/.test(
     accessFallback.find((w) => w.name === "topup")?.detail || ""),
   "Hermes usable-credit components remain distinct");
   const labels = hermesSubscriptionLabels({

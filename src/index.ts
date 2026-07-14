@@ -56,6 +56,7 @@ function parseArgs(argv: string[]): CliOptions & {
     refs: false,
     copy: null as string | null,
     noMouse: false,
+    anon: false,
     scan: false,
     statusline: false,
     open: null as string | null,
@@ -91,6 +92,7 @@ function parseArgs(argv: string[]): CliOptions & {
     else if (a === "--once" || a === "roster") opts.once = true;
     else if (a === "refs" || a === "referrals" || a === "--refs") opts.refs = true;
     else if (a === "--no-mouse" || a === "--nomouse") opts.noMouse = true;
+    else if (a === "--anon" || a === "--anonymous") opts.anon = true;
     else if (a === "copy" || a === "--copy") {
       opts.copy = argv[i + 1] || "claude";
       if (argv[i + 1]) i++;
@@ -135,8 +137,9 @@ Usage:
   llmquota --style emoji
   llmquota --refresh    bypass usage caches
   llmquota --no-mouse   keyboard-only TUI (also: LLMQUOTA_NO_MOUSE=1)
+  llmquota --anon       start TUI with personal details hidden for screenshots
 
-TUI: click card=focus · n hop · o open · u usage · s shout · b bus · ↵/c copy · ? help · j/k · r · q
+TUI: click card=focus · n hop · o open · u usage · s shout · b bus · a anon · ↵/c copy · ? help · j/k · r · q
   Enable mouse reporting (iTerm/Ghostty/Kitty). Apple Terminal: View → Allow Mouse Reporting.
   tmux/zellij fighting clicks? Use --no-mouse. Cmd/Ctrl-click opens OSC-8 ref URLs.
 
@@ -417,7 +420,7 @@ async function main(): Promise<void> {
       Boolean(process.stdin.isTTY));
 
   if (wantTui) {
-    await runTui({ refresh: opts.refresh, noMouse: opts.noMouse });
+    await runTui({ refresh: opts.refresh, noMouse: opts.noMouse, anon: opts.anon });
     return;
   }
 

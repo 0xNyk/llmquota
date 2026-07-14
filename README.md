@@ -14,6 +14,7 @@ pnpm build            # once (or after pulling src changes)
 ./llmquota bus          # cross-CLI ring messages
 ./llmquota doctor       # PATH + auth + terminal/mouse probe
 ./llmquota --no-mouse   # keyboard-only arena (tmux/zellij-friendly)
+./llmquota --anon       # screenshot-safe arena (toggle anytime with a)
 ./llmquota --json       # scripts / statuslines
 ```
 
@@ -88,6 +89,7 @@ Scans PATH, `~/.local/bin`, Homebrew, and common home dirs. **Metered** CLIs (Cl
 | `u` | Open focused fighter’s usage profile (browser) |
 | `s` | Shout to ring bus |
 | `b` | Toggle bus strip |
+| `a` | Toggle anonymous screenshot mode |
 | `j` `k` / `tab` / `1–9` | Move focus |
 | `h` | Toggle sidelined |
 | `?` | Help overlay |
@@ -104,7 +106,12 @@ set -g mouse on
 set -g allow-passthrough on
 ```
 
-Arena fills the terminal (btop-style): usage waves (fill = %, │ = time elapsed), live countdown (~45s refresh).
+Arena fills the terminal (btop-style): a heavy quota bar shows used capacity, the thin remainder shows headroom, and countdowns update live (~45s refresh).
+Quota bars stay still under normal load. They begin to wave above 70%; exhausted pools become a red tide that calms as the real reset approaches.
+
+Press `a` for anonymous screenshots, or start with `llmquota --anon`. This hides account/profile identity, referrals, local paths, bus text, and monetary details without changing quota calculations.
+
+CLIs using the same provider are shown as a shared route and placed together. Their cards stay separate unless the source proves they share the same quota pool.
 
 ### Signature moves
 
