@@ -12,6 +12,15 @@ export interface Meter {
   detail?: string | null;
 }
 
+export interface ReferralInfo {
+  code: string | null;
+  link: string | null;
+  /** Preferred copy-paste payload (usually the link) */
+  label: string;
+  source: string;
+  detail: string | null;
+}
+
 export interface ProviderSnapshot {
   id: ProviderId;
   displayName: string;
@@ -30,6 +39,7 @@ export interface ProviderSnapshot {
   hint: string | null;
   /** Lower = more headroom / prefer this fighter */
   score: number | null;
+  referral: ReferralInfo | null;
 }
 
 export interface RosterReport {
@@ -51,4 +61,6 @@ export interface CliOptions {
   refresh: boolean;
   tui?: boolean;
   once?: boolean;
+  refs?: boolean;
+  copy?: string | null;
 }

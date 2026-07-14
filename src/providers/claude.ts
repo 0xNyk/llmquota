@@ -156,6 +156,7 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
     source: "none",
     error: null,
     hint: null,
+    referral: null,
     score: null,
   };
 

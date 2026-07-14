@@ -4,14 +4,17 @@ import { collectCodex } from "./providers/codex.js";
 import { collectCursor } from "./providers/cursor.js";
 import { pathCollisionNotes } from "./providers/detect.js";
 import { collectGrok } from "./providers/grok.js";
+import { attachReferrals } from "./referrals.js";
 
 export async function collectAll(opts: { refresh?: boolean } = {}): Promise<RosterReport> {
-  const providers = await Promise.all([
-    collectClaude({ refresh: opts.refresh }),
-    collectCodex(),
-    collectCursor(),
-    collectGrok(),
-  ]);
+  const providers = attachReferrals(
+    await Promise.all([
+      collectClaude({ refresh: opts.refresh }),
+      collectCodex(),
+      collectCursor(),
+      collectGrok(),
+    ]),
+  );
 
   return {
     checkedAt: new Date().toISOString(),

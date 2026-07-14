@@ -44,6 +44,18 @@ ln -sfn "$(pwd)/llmquota" ~/.local/bin/llmquota
 
 Currently a **private** repo while the collectors stabilize. MIT-licensed and structured to go public without a rewrite: no secrets in tree, documented undocumented APIs, fail-soft providers.
 
+## Referrals / affiliate codes
+
+```bash
+llmquota refs              # list codes + links
+llmquota copy claude       # copy to clipboard (pbcopy on macOS)
+```
+
+- **Claude** — auto-detected from `~/.claude.json` guest passes (`/passes`) when eligible
+- **Cursor / Codex / Grok** — set in `~/.config/llmquota/referrals.json` (see `examples/referrals.json`)
+
+TUI: focus with `1`–`4`, then `c` to copy that provider’s referral link.
+
 ## Optional Claude Code statusline
 
 ```bash

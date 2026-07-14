@@ -75,6 +75,7 @@ export async function collectCodex(): Promise<ProviderSnapshot> {
     source: "none",
     error: null,
     hint: null,
+    referral: null,
     score: null,
   };
 

@@ -144,6 +144,7 @@ export async function collectGrok(): Promise<ProviderSnapshot> {
     source: "none",
     error: null,
     hint: null,
+    referral: null,
     score: null,
   };
 
