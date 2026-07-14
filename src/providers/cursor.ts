@@ -98,6 +98,10 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
     hint: null,
     referral: null,
     score: null,
+    profileId: "default",
+    profileLabel: "default",
+    configDir: home("Library", "Application Support", "Cursor"),
+    active: true,
   };
 
   if (!bin.installed) {

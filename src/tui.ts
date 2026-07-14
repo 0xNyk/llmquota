@@ -137,8 +137,8 @@ function providerCard(
   focused: boolean,
 ): string[] {
   const st = statusTag(p);
-  const sub = p.subscription || (p.plan ? `${p.displayName} ${p.plan}` : null);
-  const title = p.displayName;
+  const sub = p.subscription || (p.plan ? `${p.id} ${p.plan}` : null);
+  const titleMark = p.active ? `${p.displayName} ★` : p.displayName;
   const lines: string[] = [];
   lines.push(`${st.color}${BOLD}${st.label}${RESET}`);
   if (sub) lines.push(`${CYAN}sub${RESET}  ${sub}`);
@@ -171,7 +171,7 @@ function providerCard(
   const borderColor = focused
     ? CYAN
     : levelColor(level(primary?.usedPercent ?? (p.auth === "ok" ? 0 : null)));
-  const boxed = boxLines(title, lines, inner, focused);
+  const boxed = boxLines(titleMark, lines, inner, focused);
   return boxed.map((line, i) => {
     if (i === 0 || i === boxed.length - 1) {
       return `${borderColor}${line}${RESET}`;
@@ -256,15 +256,18 @@ function frame(
 
     const indent = " ".repeat(margin);
     if (useGrid) {
-      const row1 = zipRows(cards[0]!, cards[1]!, gap, out.length).map(
-        (l) => indent + l,
-      );
-      out.push(...row1);
-      out.push("");
-      const row2 = zipRows(cards[2]!, cards[3]!, gap, out.length).map(
-        (l) => indent + l,
-      );
-      out.push(...row2);
+      for (let i = 0; i < cards.length; i += 2) {
+        if (i > 0) out.push("");
+        const left = cards[i]!;
+        const right = cards[i + 1];
+        if (right) {
+          out.push(
+            ...zipRows(left, right, gap, out.length).map((l) => indent + l),
+          );
+        } else {
+          for (const line of left) out.push(indent + line);
+        }
+      }
     } else {
       for (const card of cards) {
         for (const line of card) out.push(indent + line);
@@ -282,8 +285,11 @@ function frame(
   }
 
   out.push("");
+  const n = report?.providers.length ?? 0;
+  const focusHint =
+    n <= 9 ? `1-${Math.min(9, Math.max(1, n))} focus` : `1-9 focus · tab next`;
   const footer =
-    `${FOOTER_BG}${DIM} 1-4 focus · c copy ref · r refresh · q quit · auto ${Math.round(REFRESH_MS / 1000)}s · resize-aware ${RESET}`;
+    `${FOOTER_BG}${DIM} ${focusHint} · c copy ref · r refresh · q quit · silo profiles · auto ${Math.round(REFRESH_MS / 1000)}s ${RESET}`;
   out.push(footer);
 
   // Paint full canvas with textured dark background
@@ -384,9 +390,19 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
       void load(true);
       return;
     }
-    if (key >= "1" && key <= "4") {
-      focus = Number(key) - 1;
-      redraw();
+    if (key >= "1" && key <= "9") {
+      const idx = Number(key) - 1;
+      if (report && idx < report.providers.length) {
+        focus = idx;
+        redraw();
+      }
+      return;
+    }
+    if (key === "\t") {
+      if (report?.providers.length) {
+        focus = (focus + 1) % report.providers.length;
+        redraw();
+      }
       return;
     }
     if (key === "c" || key === "C") {

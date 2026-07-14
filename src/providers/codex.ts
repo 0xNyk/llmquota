@@ -77,6 +77,10 @@ export async function collectCodex(): Promise<ProviderSnapshot> {
     hint: null,
     referral: null,
     score: null,
+    profileId: "default",
+    profileLabel: "default",
+    configDir: home(".codex"),
+    active: true,
   };
 
   if (!bin.installed) {

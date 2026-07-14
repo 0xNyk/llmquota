@@ -40,6 +40,17 @@ export interface ProviderSnapshot {
   /** Lower = more headroom / prefer this fighter */
   score: number | null;
   referral: ReferralInfo | null;
+  /**
+   * Profile / account slot within the provider.
+   * Claude: `default` or silo name; Grok: auth.json entry id; others: `default`.
+   */
+  profileId: string;
+  /** Short label for UI (e.g. personal, work) */
+  profileLabel: string;
+  /** Absolute config dir when isolated (silo CLAUDE_CONFIG_DIR) */
+  configDir: string | null;
+  /** Active silo default / matching env */
+  active: boolean;
 }
 
 export interface RosterReport {

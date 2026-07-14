@@ -22,17 +22,155 @@ interface GrokAuthStore {
   raw: Record<string, GrokAuthEntry>;
 }
 
-function readGrokAuthStore(): GrokAuthStore | null {
+function readGrokAuthStores(): GrokAuthStore[] {
   const path = home(".grok", "auth.json");
-  if (!existsSync(path)) return null;
+  if (!existsSync(path)) return [];
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, GrokAuthEntry>;
-    const key = Object.keys(raw)[0];
-    if (!key) return null;
-    return { path, key, entry: raw[key]!, raw };
+    return Object.keys(raw).map((key) => ({
+      path,
+      key,
+      entry: raw[key]!,
+      raw,
+    }));
   } catch {
-    return null;
+    return [];
   }
+}
+
+function grokProfileLabel(key: string, entry: GrokAuthEntry, index: number): string {
+  if (entry.email) return entry.email;
+  if (entry.first_name) return String(entry.first_name);
+  const short = key.includes("::") ? key.split("::")[0]! : key;
+  if (short.length <= 24) return short;
+  return `account-${index + 1}`;
+}
+
+function emptyGrokSnapshot(
+  bin: ReturnType<typeof detectGrok>,
+  store: GrokAuthStore | null,
+  index: number,
+): ProviderSnapshot {
+  const label = store
+    ? grokProfileLabel(store.key, store.entry, index)
+    : "default";
+  const multi = Boolean(store && Object.keys(store.raw).length > 1);
+  return {
+    id: "grok",
+    displayName: multi ? `Grok · ${label}` : "Grok",
+    installed: bin.installed,
+    binary: bin.path,
+    version: bin.version,
+    auth: "missing",
+    plan: null,
+    subscription: null,
+    account: store?.entry.email || null,
+    windows: [],
+    source: "none",
+    error: null,
+    hint: null,
+    referral: null,
+    score: null,
+    profileId: store?.key || "default",
+    profileLabel: label,
+    configDir: home(".grok"),
+    active: index === 0,
+  };
+}
+
+export async function collectGrokEntry(
+  store: GrokAuthStore,
+  index: number,
+): Promise<ProviderSnapshot> {
+  const bin = detectGrok();
+  const base = emptyGrokSnapshot(bin, store, index);
+
+  if (!bin.installed) {
+    base.hint = "Install Grok Build CLI, then `grok login`.";
+    return base;
+  }
+
+  if (!store.entry.key && !store.entry.refresh_token) {
+    base.hint = "Run `grok login`.";
+    return base;
+  }
+
+  let entry = store.entry;
+  base.account = (entry.email as string) || null;
+
+  if (accessExpired(entry)) {
+    const refreshed = await refreshGrokAccess(store);
+    if (!refreshed.ok) {
+      base.auth = "expired";
+      base.error = refreshed.error || "token refresh failed";
+      const claims = entry.key ? decodeJwtPayload(entry.key) : null;
+      const tier = typeof claims?.tier === "number" ? claims.tier : null;
+      base.plan = tier != null ? `tier ${tier}` : null;
+      base.subscription =
+        tier != null ? `Grok · xAI API tier ${tier}` : "Grok · OIDC (expired)";
+      base.hint =
+        "Access JWT expired and refresh failed. Wait a few minutes before `grok login` (device-code is rate-limited / slow_down).";
+      return base;
+    }
+    entry = store.entry;
+    base.source = "oidc_refresh";
+  }
+
+  const claims = entry.key ? decodeJwtPayload(entry.key) : null;
+  const exp = typeof claims?.exp === "number" ? claims.exp : null;
+
+  base.auth = "ok";
+  const tier = typeof claims?.tier === "number" ? claims.tier : null;
+  base.plan = tier != null ? `tier ${tier}` : (entry.auth_mode as string) || "oidc";
+  base.subscription =
+    tier != null ? `Grok · xAI API tier ${tier}` : `Grok · ${(entry.auth_mode as string) || "OIDC"}`;
+  if (!base.source || base.source === "none") base.source = "local_auth+api_probe";
+
+  const accessToken = entry.key!;
+  const probe = await fetchJson("https://api.x.ai/v1/models", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      "User-Agent": `GrokCLI/${bin.version || "0.2"}`,
+    },
+  });
+
+  if (probe.status === 401 && entry.refresh_token) {
+    const refreshed = await refreshGrokAccess(store);
+    if (refreshed.ok) {
+      entry = store.entry;
+      const retry = await fetchJson("https://api.x.ai/v1/models", {
+        headers: {
+          Authorization: `Bearer ${entry.key}`,
+          Accept: "application/json",
+          "User-Agent": `GrokCLI/${bin.version || "0.2"}`,
+        },
+      });
+      return finalizeProbe(base, entry, retry, exp);
+    }
+  }
+
+  return finalizeProbe(base, entry, probe, exp);
+}
+
+export async function collectGrokAll(): Promise<ProviderSnapshot[]> {
+  const bin = detectGrok();
+  const stores = readGrokAuthStores();
+  if (!stores.length) {
+    const snap = emptyGrokSnapshot(bin, null, 0);
+    snap.hint = bin.installed ? "Run `grok login`." : "Install Grok Build CLI, then `grok login`.";
+    return [snap];
+  }
+  const out: ProviderSnapshot[] = [];
+  for (let i = 0; i < stores.length; i++) {
+    out.push(await collectGrokEntry(stores[i]!, i));
+  }
+  return out;
+}
+
+export async function collectGrok(): Promise<ProviderSnapshot> {
+  const all = await collectGrokAll();
+  return all[0]!;
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
@@ -126,97 +264,6 @@ async function refreshGrokAccess(store: GrokAuthStore): Promise<{ ok: boolean; e
   store.raw[store.key] = entry;
   writeFileSync(store.path, `${JSON.stringify(store.raw, null, 2)}\n`, { mode: 0o600 });
   return { ok: true };
-}
-
-export async function collectGrok(): Promise<ProviderSnapshot> {
-  const bin = detectGrok();
-  const base: ProviderSnapshot = {
-    id: "grok",
-    displayName: "Grok",
-    installed: bin.installed,
-    binary: bin.path,
-    version: bin.version,
-    auth: "missing",
-    plan: null,
-    subscription: null,
-    account: null,
-    windows: [],
-    source: "none",
-    error: null,
-    hint: null,
-    referral: null,
-    score: null,
-  };
-
-  if (!bin.installed) {
-    base.hint = "Install Grok Build CLI, then `grok login`.";
-    return base;
-  }
-
-  const store = readGrokAuthStore();
-  if (!store?.entry.key && !store?.entry.refresh_token) {
-    base.hint = "Run `grok login`.";
-    return base;
-  }
-
-  let entry = store!.entry;
-  base.account = (entry.email as string) || null;
-
-  if (accessExpired(entry)) {
-    const refreshed = await refreshGrokAccess(store!);
-    if (!refreshed.ok) {
-      base.auth = "expired";
-      base.error = refreshed.error || "token refresh failed";
-      const claims = entry.key ? decodeJwtPayload(entry.key) : null;
-      const tier = typeof claims?.tier === "number" ? claims.tier : null;
-      base.plan = tier != null ? `tier ${tier}` : null;
-      base.subscription =
-        tier != null ? `Grok · xAI API tier ${tier}` : "Grok · OIDC (expired)";
-      base.hint =
-        "Access JWT expired and refresh failed. Wait a few minutes before `grok login` (device-code is rate-limited / slow_down).";
-      return base;
-    }
-    entry = store!.entry;
-    base.source = "oidc_refresh";
-  }
-
-  const claims = entry.key ? decodeJwtPayload(entry.key) : null;
-  const exp = typeof claims?.exp === "number" ? claims.exp : null;
-
-  base.auth = "ok";
-  const tier = typeof claims?.tier === "number" ? claims.tier : null;
-  base.plan = tier != null ? `tier ${tier}` : (entry.auth_mode as string) || "oidc";
-  base.subscription =
-    tier != null ? `Grok · xAI API tier ${tier}` : `Grok · ${(entry.auth_mode as string) || "OIDC"}`;
-  // SuperGrok product tier isn't on the JWT; weekly pool lives in Settings → Usage
-  if (!base.source || base.source === "none") base.source = "local_auth+api_probe";
-
-  const accessToken = entry.key!;
-  const probe = await fetchJson("https://api.x.ai/v1/models", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-      "User-Agent": `GrokCLI/${bin.version || "0.2"}`,
-    },
-  });
-
-  // If API says unauthenticated, try one refresh then retry once
-  if (probe.status === 401 && entry.refresh_token) {
-    const refreshed = await refreshGrokAccess(store!);
-    if (refreshed.ok) {
-      entry = store!.entry;
-      const retry = await fetchJson("https://api.x.ai/v1/models", {
-        headers: {
-          Authorization: `Bearer ${entry.key}`,
-          Accept: "application/json",
-          "User-Agent": `GrokCLI/${bin.version || "0.2"}`,
-        },
-      });
-      return finalizeProbe(base, entry, retry, exp);
-    }
-  }
-
-  return finalizeProbe(base, entry, probe, exp);
 }
 
 function finalizeProbe(

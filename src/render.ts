@@ -107,7 +107,8 @@ function renderProvider(p: ProviderSnapshot, opts: CliOptions): string {
   const sub = p.subscription || (p.plan ? `${p.displayName} ${p.plan}` : null);
   const plan = p.plan ? c(opts, DIM, ` · ${p.plan}`) : "";
   const ver = p.version ? c(opts, DIM, `  ${p.version}`) : "";
-  const head = `${levelGlyph(opts, primaryMeter(p)?.usedPercent ?? null)} ${c(opts, BOLD, p.displayName)}${plan}  ${tag}${ver}`;
+  const active = p.active ? c(opts, CYAN, " ★") : "";
+  const head = `${levelGlyph(opts, primaryMeter(p)?.usedPercent ?? null)} ${c(opts, BOLD, p.displayName)}${active}${plan}  ${tag}${ver}`;
 
   const lines = [head];
 
@@ -116,6 +117,9 @@ function renderProvider(p: ProviderSnapshot, opts: CliOptions): string {
     return lines.join("\n");
   }
 
+  if (p.profileId !== "default" && p.configDir) {
+    lines.push(c(opts, DIM, `  profile ${p.profileLabel}  ·  ${p.configDir}`));
+  }
   if (sub) {
     lines.push(`  ${c(opts, CYAN, "subscription")}  ${sub}`);
   }
@@ -158,9 +162,11 @@ export function renderDoctor(report: RosterReport, opts: CliOptions): string {
   for (const p of report.providers) {
     const ok = p.installed && p.auth === "ok";
     const mark = ok ? c(opts, GREEN, "OK") : c(opts, YELLOW, "…");
+    const label = p.displayName;
     lines.push(
-      `${mark} ${p.displayName.padEnd(8)} installed=${p.installed} auth=${p.auth} sub=${p.subscription || p.plan || "?"} source=${p.source}`,
+      `${mark} ${label.padEnd(22)} installed=${p.installed} auth=${p.auth} sub=${p.subscription || p.plan || "?"} source=${p.source}${p.active ? " ★" : ""}`,
     );
+    if (p.configDir) lines.push(c(opts, DIM, `     dir ${p.configDir}`));
     if (p.binary) lines.push(c(opts, DIM, `     bin ${p.binary}`));
     if (p.error) lines.push(c(opts, RED, `     ${p.error}`));
     if (p.hint) lines.push(c(opts, DIM, `     ${p.hint}`));
@@ -184,14 +190,17 @@ export function renderRefs(report: RosterReport, opts: CliOptions): string {
   lines.push(c(opts, BOLD, "llmquota referrals"));
   lines.push(c(opts, DIM, "copy with: llmquota copy <claude|codex|cursor|grok>"));
   lines.push("");
+  const seen = new Set<string>();
   for (const p of report.providers) {
+    if (seen.has(p.id)) continue;
+    seen.add(p.id);
     const ref = p.referral;
     if (!ref?.label) {
-      lines.push(`${p.displayName.padEnd(8)}  ${c(opts, DIM, "— none (set ~/.config/llmquota/referrals.json)")}`);
+      lines.push(`${p.id.padEnd(8)}  ${c(opts, DIM, "— none (set ~/.config/llmquota/referrals.json)")}`);
       continue;
     }
     const code = ref.code ? `${ref.code}  ` : "";
-    lines.push(`${c(opts, BOLD, p.displayName.padEnd(8))}  ${code}${ref.link || ref.label}`);
+    lines.push(`${c(opts, BOLD, p.id.padEnd(8))}  ${code}${ref.link || ref.label}`);
     if (ref.detail) lines.push(c(opts, DIM, `          ${ref.detail}`));
     lines.push(c(opts, DIM, `          source: ${ref.source}`));
   }
