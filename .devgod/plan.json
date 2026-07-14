@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "feature",
+  "title": "Detect active providers and models",
+  "status": "done",
+  "venture_or_app": "llmquota",
+  "summary": "Show authoritative active inference provider and model metadata without conflating Hermes runtime routing with Nous quota-account credentials.",
+  "risks": [
+    "Hermes auth.json active_provider can be stale and is not runtime routing truth",
+    "Session-level model switches can override configured defaults",
+    "Some CLIs do not persist an active model outside a running session",
+    "Unknown active models must remain unknown"
+  ],
+  "files_touch": [
+    "src/active-selection.ts",
+    "src/types.ts",
+    "src/snapshot.ts",
+    "src/providers/claude.ts",
+    "src/providers/codex.ts",
+    "src/providers/cursor.ts",
+    "src/providers/grok.ts",
+    "src/providers/hermes.ts",
+    "src/render.ts",
+    "src/tui-card-body.ts",
+    "src/provider-usage.test.ts"
+  ],
+  "verify_commands": [
+    "pnpm test",
+    "./llmquota --once --json",
+    "./llmquota --once --plain",
+    "git diff --check"
+  ],
+  "tests": [
+    "Hermes model.provider and model.default parse independently from auth active_provider",
+    "Claude JSON model selection parses",
+    "Codex configured and current-thread model selection parses",
+    "Grok configured or active-session model selection parses",
+    "Unknown model remains null"
+  ],
+  "approved_at": "2026-07-15",
+  "approved_by": "user-explicit-active-provider-model"
+}

@@ -8,14 +8,19 @@ import {
   type ClaudeProfileTarget,
 } from "../profiles.js";
 import type { Meter, ProviderSnapshot } from "../types.js";
+import { baseSnapshot, isExpiredAt } from "../snapshot.js";
 import {
   availableInFromIso,
+  availabilityScore,
   fetchJson,
-  headroomScore,
+  hasAnyOwn,
+  nonEmpty,
+  normalizeIsoTimestamp,
   readCache,
   writeCache,
 } from "../util.js";
 import { detectClaude } from "./detect.js";
+import { readClaudeActiveSelection } from "../active-selection.js";
 
 /** Public Claude Code OAuth client id (embedded in the CLI). */
 const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -28,12 +33,70 @@ interface ClaudeUsageWindow {
   resets_at?: string;
 }
 
+interface ClaudeMoney {
+  amount_minor?: number;
+  currency?: string;
+  exponent?: number;
+}
+
+interface ClaudeSpend {
+  used?: ClaudeMoney;
+  limit?: ClaudeMoney;
+  percent?: number;
+  enabled?: boolean;
+  disabled_reason?: string | null;
+}
+
+interface ClaudeExtraUsage {
+  monthly_limit?: number;
+  used_credits?: number;
+  utilization?: number;
+  currency?: string;
+  decimal_places?: number;
+  is_enabled?: boolean;
+  disabled_reason?: string | null;
+}
+
+interface ClaudeLimit {
+  kind?: string;
+  group?: string;
+  percent?: number;
+  resets_at?: string | null;
+  is_active?: boolean;
+  scope?: {
+    model?: { display_name?: string | null } | null;
+    surface?: string | null;
+  } | null;
+}
+
 interface ClaudeUsagePayload {
   five_hour?: ClaudeUsageWindow;
   seven_day?: ClaudeUsageWindow;
+  seven_day_oauth_apps?: ClaudeUsageWindow | null;
   seven_day_sonnet?: ClaudeUsageWindow;
   seven_day_opus?: ClaudeUsageWindow;
-  [key: string]: ClaudeUsageWindow | undefined;
+  seven_day_cowork?: ClaudeUsageWindow | null;
+  seven_day_omelette?: ClaudeUsageWindow | null;
+  extra_usage?: ClaudeExtraUsage | null;
+  spend?: ClaudeSpend | null;
+  limits?: ClaudeLimit[];
+}
+
+const CLAUDE_USAGE_FIELDS = [
+  "five_hour",
+  "seven_day",
+  "seven_day_oauth_apps",
+  "seven_day_sonnet",
+  "seven_day_opus",
+  "seven_day_cowork",
+  "seven_day_omelette",
+  "extra_usage",
+  "spend",
+  "limits",
+] as const;
+
+export function isClaudeUsagePayload(value: unknown): value is ClaudeUsagePayload {
+  return hasAnyOwn(value, CLAUDE_USAGE_FIELDS) && value.error == null;
 }
 
 interface ClaudeCreds {
@@ -57,10 +120,6 @@ interface ClaudeOauthBlob {
   scopes?: string[];
 }
 
-function nonEmpty(s: string | undefined | null): s is string {
-  return typeof s === "string" && s.length > 0;
-}
-
 function normalizeExpiresAt(raw: number | undefined): number | undefined {
   if (raw == null || !Number.isFinite(raw) || raw <= 0) return undefined;
   return raw < 1e12 ? raw * 1000 : raw;
@@ -68,9 +127,7 @@ function normalizeExpiresAt(raw: number | undefined): number | undefined {
 
 function accessExpired(creds: ClaudeCreds, skewMs = EXPIRY_SKEW_MS): boolean {
   if (!nonEmpty(creds.accessToken)) return true;
-  const exp = normalizeExpiresAt(creds.expiresAt);
-  if (exp == null) return false;
-  return exp <= Date.now() + skewMs;
+  return isExpiredAt(normalizeExpiresAt(creds.expiresAt), skewMs);
 }
 
 function fromOauth(oauth: ClaudeOauthBlob | undefined, source: string): ClaudeCreds | null {
@@ -316,18 +373,83 @@ function subscriptionLabel(creds: ClaudeCreds | null): string | null {
 function meterFrom(
   name: string,
   label: string,
-  w: ClaudeUsageWindow | undefined,
+  w: ClaudeUsageWindow | null | undefined,
 ): Meter | null {
   if (!w || w.utilization == null) return null;
-  const used = Number(w.utilization);
-  const usedPercent = used <= 1 ? used * 100 : used;
+  const usedPercent = Number(w.utilization);
+  if (!Number.isFinite(usedPercent) || usedPercent < 0) return null;
+  const resetsAt = normalizeIsoTimestamp(w.resets_at);
   return {
     name,
     label,
     usedPercent,
-    resetsAt: w.resets_at || null,
-    availableIn: availableInFromIso(w.resets_at),
+    resetsAt,
+    availableIn: availableInFromIso(resetsAt),
     windowSeconds: name === "five_hour" ? 5 * 3600 : 7 * 86400,
+  };
+}
+
+function moneyLabel(money: ClaudeMoney | undefined): string | null {
+  const amount = money?.amount_minor;
+  const currency = money?.currency;
+  const exponent = money?.exponent;
+  if (
+    amount == null ||
+    !Number.isFinite(amount) ||
+    !currency ||
+    exponent == null ||
+    !Number.isInteger(exponent) ||
+    exponent < 0 ||
+    exponent > 6
+  ) {
+    return null;
+  }
+  try {
+    return new Intl.NumberFormat("en", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: exponent,
+      maximumFractionDigits: exponent,
+    }).format(amount / 10 ** exponent);
+  } catch {
+    return `${(amount / 10 ** exponent).toFixed(exponent)} ${currency}`;
+  }
+}
+
+function spendMeter(
+  spend: ClaudeSpend | null | undefined,
+  extra: ClaudeExtraUsage | null | undefined,
+): Meter | null {
+  if (!spend && !extra) return null;
+  const percent = Number(extra?.utilization ?? spend?.percent);
+  if (!Number.isFinite(percent) || percent < 0) return null;
+  const fallbackMoney = (amount: number | undefined): ClaudeMoney | undefined =>
+    amount == null
+      ? undefined
+      : {
+          amount_minor: amount,
+          currency: extra?.currency,
+          exponent: extra?.decimal_places,
+        };
+  const used = moneyLabel(spend?.used ?? fallbackMoney(extra?.used_credits));
+  const limit = moneyLabel(spend?.limit ?? fallbackMoney(extra?.monthly_limit));
+  const enabled = extra?.is_enabled ?? spend?.enabled;
+  const disabledReason = extra?.disabled_reason ?? spend?.disabled_reason;
+  const status =
+    enabled === false
+      ? `disabled${disabledReason ? ` (${disabledReason.replace(/_/g, " ")})` : ""}`
+      : null;
+  return {
+    name: "extra_usage",
+    label: "extra usage",
+    usedPercent: percent,
+    resetsAt: null,
+    availableIn: null,
+    windowSeconds: null,
+    detail: [used && limit ? `${used} / ${limit} used` : used ? `${used} used` : null, status]
+      .filter(Boolean)
+      .join(" · ") || null,
+    affectsAvailability: false,
   };
 }
 
@@ -340,27 +462,20 @@ function emptySnapshot(
   bin: ReturnType<typeof detectClaude>,
   target: ClaudeProfileTarget,
 ): ProviderSnapshot {
-  return {
+  const selection = readClaudeActiveSelection(target.configDir);
+  return baseSnapshot({
     id: "claude",
     displayName: displayNameFor(target),
     installed: bin.installed,
     binary: bin.path,
     version: bin.version,
-    auth: "missing",
-    plan: null,
-    subscription: null,
-    account: null,
-    windows: [],
-    source: "none",
-    error: null,
-    hint: null,
-    referral: null,
-    score: null,
     profileId: target.profileId,
     profileLabel: target.profileLabel,
     configDir: target.configDir,
     active: target.active,
-  };
+    activeProvider: selection.provider,
+    activeModel: selection.model,
+  });
 }
 
 export async function collectClaudeProfile(
@@ -424,10 +539,10 @@ export async function collectClaudeProfile(
   const cacheKey = `claude-usage-${target.profileId}`;
   if (!opts.refresh) {
     const cached = readCache<ClaudeUsagePayload>(cacheKey, 90_000);
-    if (cached) {
-      base.windows = collectWindows(cached);
+    if (cached && isClaudeUsagePayload(cached)) {
+      base.windows = collectClaudeUsageWindows(cached);
       base.source = "oauth_usage(cache)";
-      base.score = headroomScore(base.windows.map((w) => w.usedPercent));
+      base.score = availabilityScore(base.windows);
       return base;
     }
   }
@@ -449,12 +564,12 @@ export async function collectClaudeProfile(
     if (refreshed.ok) {
       creds = refreshed.creds;
       res = await fetchUsage(creds.accessToken);
-      if (res.ok && res.json && typeof res.json === "object") {
+      if (res.ok && isClaudeUsagePayload(res.json)) {
         const payload = res.json as ClaudeUsagePayload;
         writeCache(cacheKey, payload);
-        base.windows = collectWindows(payload);
+        base.windows = collectClaudeUsageWindows(payload);
         base.source = "oauth_usage(refreshed)";
-        base.score = headroomScore(base.windows.map((w) => w.usedPercent));
+        base.score = availabilityScore(base.windows);
         return base;
       }
     } else {
@@ -477,17 +592,28 @@ export async function collectClaudeProfile(
 
   if (!res.ok || !res.json || typeof res.json !== "object") {
     base.auth = res.status === 401 ? "error" : "ok";
-    base.error = `usage fetch failed (HTTP ${res.status})`;
+    base.error = res.status === 0
+      ? "usage unavailable (network error)"
+      : `usage fetch failed (HTTP ${res.status})`;
     base.source = "oauth_usage";
-    base.hint = "Open `claude` and run `/usage`, or re-login.";
+    base.hint = res.status === 0
+      ? "Could not reach Anthropic usage; retry when online."
+      : "Open `claude` and run `/usage`, or re-login.";
     return base;
   }
 
-  const payload = res.json as ClaudeUsagePayload;
+  if (!isClaudeUsagePayload(res.json)) {
+    base.error = "usage response missing recognized fields";
+    base.source = "oauth_usage";
+    base.hint = "Anthropic returned an unfamiliar usage response; retry or update llmquota.";
+    return base;
+  }
+
+  const payload = res.json;
   writeCache(cacheKey, payload);
-  base.windows = collectWindows(payload);
+  base.windows = collectClaudeUsageWindows(payload);
   base.source = "oauth_usage";
-  base.score = headroomScore(base.windows.map((w) => w.usedPercent));
+  base.score = availabilityScore(base.windows);
   return base;
 }
 
@@ -518,17 +644,41 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
   );
 }
 
-function collectWindows(payload: ClaudeUsagePayload): Meter[] {
+export function collectClaudeUsageWindows(payload: ClaudeUsagePayload): Meter[] {
   const order: Array<[string, string]> = [
     ["five_hour", "5h"],
     ["seven_day", "7d"],
+    ["seven_day_oauth_apps", "7d OAuth apps"],
     ["seven_day_sonnet", "7d Sonnet"],
     ["seven_day_opus", "7d Opus"],
+    ["seven_day_cowork", "7d Cowork"],
+    ["seven_day_omelette", "7d Omelette"],
   ];
   const meters: Meter[] = [];
   for (const [key, label] of order) {
-    const m = meterFrom(key, label, payload[key]);
+    const m = meterFrom(
+      key,
+      label,
+      payload[key as keyof ClaudeUsagePayload] as ClaudeUsageWindow | null | undefined,
+    );
     if (m) meters.push(m);
   }
+  for (const limit of payload.limits || []) {
+    if (limit.is_active !== true) continue;
+    const kind = limit.kind || limit.group || "limit";
+    const duplicate =
+      (limit.group === "session" && meters.some((m) => m.name === "five_hour")) ||
+      (kind === "weekly_all" && meters.some((m) => m.name === "seven_day"));
+    if (duplicate) continue;
+    const scope = limit.scope?.model?.display_name || limit.scope?.surface;
+    const label = scope || kind.replace(/_/g, " ");
+    const meter = meterFrom(kind, label, {
+      utilization: limit.percent,
+      resets_at: limit.resets_at || undefined,
+    });
+    if (meter) meters.push(meter);
+  }
+  const spend = spendMeter(payload.spend, payload.extra_usage);
+  if (spend) meters.push(spend);
   return meters;
 }

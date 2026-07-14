@@ -49,7 +49,7 @@ function fromConfig(
   id: ProviderId,
   cfg: ReferralConfigFile,
 ): ReferralInfo | null {
-  const entry = cfg[id];
+  const entry = (cfg as Record<string, { code?: string; link?: string } | undefined>)[id];
   if (!entry) return null;
   const code = entry.code?.trim() || null;
   let link = entry.link?.trim() || null;

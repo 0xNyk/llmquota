@@ -1,7 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { ProviderSnapshot } from "../types.js";
-import { availableInFromEpoch, fetchJson, home, isoFromEpochSec } from "../util.js";
+import { decodeJwtPayload, fetchJson, home } from "../util.js";
+import { baseSnapshot, isExpiredAt } from "../snapshot.js";
 import { detectGrok } from "./detect.js";
+import { readGrokActiveSelection } from "../active-selection.js";
 
 interface GrokAuthEntry {
   key?: string;
@@ -51,31 +53,25 @@ function emptyGrokSnapshot(
   store: GrokAuthStore | null,
   index: number,
 ): ProviderSnapshot {
+  const selection = readGrokActiveSelection(home(".grok"));
   const label = store
     ? grokProfileLabel(store.key, store.entry, index)
     : "default";
   const multi = Boolean(store && Object.keys(store.raw).length > 1);
-  return {
+  return baseSnapshot({
     id: "grok",
     displayName: multi ? `Grok · ${label}` : "Grok",
     installed: bin.installed,
     binary: bin.path,
     version: bin.version,
-    auth: "missing",
-    plan: null,
-    subscription: null,
     account: store?.entry.email || null,
-    windows: [],
-    source: "none",
-    error: null,
-    hint: null,
-    referral: null,
-    score: null,
     profileId: store?.key || "default",
     profileLabel: label,
     configDir: home(".grok"),
     active: index === 0,
-  };
+    activeProvider: selection.provider,
+    activeModel: selection.model,
+  });
 }
 
 export async function collectGrokEntry(
@@ -173,31 +169,14 @@ export async function collectGrok(): Promise<ProviderSnapshot> {
   return all[0]!;
 }
 
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const part = token.split(".")[1];
-    if (!part) return null;
-    const padded = part + "=".repeat((4 - (part.length % 4)) % 4);
-    return JSON.parse(Buffer.from(padded, "base64url").toString("utf8")) as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    return null;
-  }
-}
-
 function accessExpired(entry: GrokAuthEntry, skewSec = 120): boolean {
+  const skewMs = skewSec * 1000;
   if (entry.key) {
     const claims = decodeJwtPayload(entry.key);
-    const exp = typeof claims?.exp === "number" ? claims.exp : null;
-    if (exp != null) return exp * 1000 <= Date.now() + skewSec * 1000;
+    const exp = typeof claims?.exp === "number" ? claims.exp * 1000 : null;
+    if (exp != null) return isExpiredAt(exp, skewMs);
   }
-  if (entry.expires_at) {
-    const t = Date.parse(entry.expires_at);
-    if (!Number.isNaN(t)) return t <= Date.now() + skewSec * 1000;
-  }
-  return false;
+  return isExpiredAt(entry.expires_at, skewMs);
 }
 
 async function refreshGrokAccess(store: GrokAuthStore): Promise<{ ok: boolean; error?: string }> {
@@ -269,45 +248,44 @@ async function refreshGrokAccess(store: GrokAuthStore): Promise<{ ok: boolean; e
 function finalizeProbe(
   base: ProviderSnapshot,
   entry: GrokAuthEntry,
-  probe: { ok: boolean; status: number; json: unknown; text: string },
-  exp: number | null,
+  probe: {
+    ok: boolean;
+    status: number;
+    json: unknown;
+    text: string;
+    headers?: Headers | Record<string, string> | null;
+  },
+  _exp: number | null,
 ): ProviderSnapshot {
+  // Never invent usage windows/scores. Never use JWT exp as a usage reset.
+  void entry;
+  void _exp;
+
+  const errMsg =
+    (probe.json as { error?: string; error_message?: string } | null)?.error ||
+    (probe.json as { error_message?: string } | null)?.error_message ||
+    probe.text.slice(0, 180);
+
+  base.windows = [];
+  base.score = null;
+
   if (probe.status === 403) {
-    const msg =
-      (probe.json as { error?: string } | null)?.error || probe.text.slice(0, 180);
-    base.hint = `${msg} · weekly pool: Settings → Usage on grok.com`;
-    base.windows = [
-      {
-        name: "api_or_weekly",
-        label: "API/credits",
-        usedPercent: msg.toLowerCase().includes("run out") ? 100 : null,
-        resetsAt: (entry.expires_at as string) || (exp ? isoFromEpochSec(exp) : null),
-        availableIn: exp
-          ? availableInFromEpoch(exp)
-          : availableInFromIsoSafe(entry.expires_at as string),
-        windowSeconds: null,
-        detail: "SuperGrok weekly % not exposed to CLI yet",
-      },
-    ];
-    base.score = base.windows[0]?.usedPercent ?? 100;
+    const msg = errMsg;
+    const apiCredits = /run out of credits|add credits|need a grok subscription/i.test(msg);
+    if (apiCredits) {
+      base.hint =
+        "api.x.ai credits empty (not SuperGrok weekly %). Check grok.com → Settings → Usage for the real weekly pool.";
+    } else if (/quota|rate.?limit|usage.?limit|insufficient/i.test(msg)) {
+      base.hint = `API limit signal: ${msg.slice(0, 120)} · weekly % → grok.com Settings → Usage`;
+    } else {
+      base.hint = `API 403: ${msg.slice(0, 120) || "forbidden"} · weekly % → grok.com Settings → Usage`;
+    }
     return base;
   }
 
   if (probe.ok) {
     base.hint =
-      "API auth OK. SuperGrok weekly pool still lives in Settings → Usage (no stable CLI endpoint yet).";
-    base.windows = [
-      {
-        name: "weekly_pool",
-        label: "weekly pool",
-        usedPercent: null,
-        resetsAt: null,
-        availableIn: null,
-        windowSeconds: 7 * 86400,
-        detail: "open grok.com → Settings → Usage",
-      },
-    ];
-    base.score = 50;
+      "Auth OK · SuperGrok weekly % has no public API yet — read grok.com → Settings → Usage";
     return base;
   }
 
@@ -317,15 +295,10 @@ function finalizeProbe(
   return base;
 }
 
-function availableInFromIsoSafe(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return null;
-  const sec = Math.floor((t - Date.now()) / 1000);
-  if (sec < 0) return "0m";
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  if (h > 48) return `${Math.floor(h / 24)}d${h % 24}h`;
-  if (h > 0) return `${h}h${m}m`;
-  return `${m}m`;
+/** Exported for unit tests. */
+export function finalizeGrokProbeForTest(
+  base: ProviderSnapshot,
+  probe: { ok: boolean; status: number; json: unknown; text: string },
+): ProviderSnapshot {
+  return finalizeProbe(base, {}, probe, null);
 }

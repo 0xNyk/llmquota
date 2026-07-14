@@ -1,5 +1,8 @@
 import type { CliOptions, Meter, ProviderSnapshot, RosterReport } from "./types.js";
 import { primaryMeter } from "./collect.js";
+import { formatTerminalProbe, probeTerminal } from "./terminal.js";
+import { usageLevel } from "./usage-level.js";
+import { meterAffectsAvailability } from "./util.js";
 
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
@@ -19,16 +22,8 @@ function c(opts: CliOptions, code: string, text: string): string {
   return colorEnabled(opts) ? `${code}${text}${RESET}` : text;
 }
 
-function level(used: number | null): "blue" | "green" | "yellow" | "red" | "unknown" {
-  if (used == null) return "unknown";
-  if (used >= 90) return "red";
-  if (used >= 70) return "yellow";
-  if (used >= 35) return "green";
-  return "blue";
-}
-
 function levelGlyph(opts: CliOptions, used: number | null): string {
-  const lvl = level(used);
+  const lvl = usageLevel(used);
   if (opts.emoji) {
     return { blue: "🔵", green: "🟢", yellow: "🟡", red: "🔴", unknown: "⚪" }[lvl];
   }
@@ -51,7 +46,7 @@ function bar(opts: CliOptions, used: number | null, width = 14): string {
   const filled = Math.round((pct / 100) * width);
   const empty = width - filled;
   const body = "█".repeat(filled) + "░".repeat(empty);
-  const lvl = level(used);
+  const lvl = usageLevel(used);
   const code =
     lvl === "red" ? RED : lvl === "yellow" ? YELLOW : lvl === "green" ? GREEN : BLUE;
   return c(opts, code, body);
@@ -62,22 +57,41 @@ function statusTag(p: ProviderSnapshot): string {
   if (p.auth === "missing") return "not logged in";
   if (p.auth === "expired") return "auth expired";
   if (p.auth === "error") return "auth error";
+  if (p.error && !p.windows.length) return "usage unavailable";
   // Prefer aggregate score so a maxed sub-window with top-up left isn't false KO
   if (p.score != null) {
     if (p.score >= 100) return "KO";
     if (p.score >= 90) return "limping";
     return "ready";
   }
-  if (p.windows.some((w) => (w.usedPercent ?? 0) >= 100)) return "KO";
-  if (p.windows.some((w) => (w.usedPercent ?? 0) >= 90)) return "limping";
+  if (p.windows.some((w) => meterAffectsAvailability(w) && (w.usedPercent ?? 0) >= 100)) return "KO";
+  if (p.windows.some((w) => meterAffectsAvailability(w) && (w.usedPercent ?? 0) >= 90)) return "limping";
   return "ready";
 }
 
+function formatMeterReset(m: Meter): string {
+  // Prefer real absolute reset; relative availableIn is secondary.
+  if (m.resetsAt) {
+    const t = Date.parse(m.resetsAt);
+    if (!Number.isNaN(t)) {
+      const d = new Date(t);
+      const mon = d.toLocaleString("en-US", { month: "short" });
+      const stamp = `${mon} ${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      return m.availableIn ? `reset ${stamp} (in ${m.availableIn})` : `reset ${stamp}`;
+    }
+  }
+  if (m.availableIn) return `resets in ${m.availableIn}`;
+  return "";
+}
+
 function meterLine(opts: CliOptions, m: Meter): string {
-  const pct =
-    m.usedPercent == null ? "  ?%" : `${String(Math.round(m.usedPercent)).padStart(3)}%`;
-  const reset = m.availableIn ? `resets in ${m.availableIn}` : m.resetsAt ? `reset ${m.resetsAt}` : "";
+  const reset = formatMeterReset(m);
   const detail = m.detail ? `  ${DIM_PLAIN(opts, m.detail)}` : "";
+  // No invented % — omit bar/% when usage was not measured.
+  if (m.usedPercent == null) {
+    return `  ${levelGlyph(opts, null)} ${m.label.padEnd(12)}${reset ? `  ${reset}` : ""}${detail}`;
+  }
+  const pct = `${String(Math.round(m.usedPercent)).padStart(3)}%`;
   return `  ${levelGlyph(opts, m.usedPercent)} ${m.label.padEnd(12)} ${bar(opts, m.usedPercent)} ${pct}  ${reset}${detail}`;
 }
 
@@ -132,6 +146,18 @@ function renderProvider(p: ProviderSnapshot, opts: CliOptions): string {
   if (p.account) {
     lines.push(`  ${c(opts, DIM, "account")}       ${p.account}`);
   }
+  if (p.activeProvider) {
+    lines.push(`  ${c(opts, DIM, "provider")}      ${p.activeProvider}`);
+  }
+  if (p.activeProvider || p.activeModel) {
+    lines.push(`  ${c(opts, DIM, "model")}         ${p.activeModel || "unknown"}`);
+  }
+  if (p.score != null && p.auth === "ok") {
+    const headroom = Math.max(0, Math.round(100 - p.score));
+    lines.push(
+      `  ${c(opts, DIM, "headroom")}      ${headroom}%  ·  ${Math.round(p.score)}% used`,
+    );
+  }
   if (p.referral?.label) {
     const codeBit = p.referral.code ? `${p.referral.code}  ` : "";
     lines.push(
@@ -184,6 +210,40 @@ export function renderDoctor(report: RosterReport, opts: CliOptions): string {
     for (const n of report.pathNotes) lines.push(`  ${n}`);
   } else {
     lines.push(c(opts, GREEN, "No agent PATH collisions detected (or only one agent on PATH)."));
+  }
+
+  const detected = report.providers.filter((p) => p.source === "detect");
+  if (detected.length) {
+    lines.push("");
+    lines.push(c(opts, BOLD, "detected CLIs (no quota probe yet)"));
+    for (const p of detected) {
+      lines.push(
+        `  ○ ${p.displayName.padEnd(18)} ${c(opts, DIM, p.binary || "—")}${p.version ? c(opts, DIM, `  ${p.version.slice(0, 36)}`) : ""}`,
+      );
+    }
+    lines.push(c(opts, DIM, "  full catalog: llmquota scan"));
+  }
+
+  lines.push("");
+  lines.push(c(opts, BOLD, "terminal"));
+  const probe = probeTerminal();
+  for (const line of formatTerminalProbe(probe)) {
+    lines.push(c(opts, DIM, `  ${line}`));
+  }
+  if (!probe.tty || !probe.stdinTty) {
+    lines.push(c(opts, DIM, "  mouse: n/a (not a TTY)"));
+  } else if (probe.mouseDisabledByEnv) {
+    lines.push(c(opts, YELLOW, "  mouse: disabled (LLMQUOTA_NO_MOUSE / --no-mouse)"));
+  } else if (probe.mouseLikely) {
+    lines.push(c(opts, GREEN, "  mouse: likely OK (SGR 1006) — enable reporting in the emulator if clicks do nothing"));
+  } else {
+    lines.push(
+      c(
+        opts,
+        YELLOW,
+        "  mouse: uncertain — try Ghostty/iTerm/Kitty, or llmquota --no-mouse inside tmux/zellij",
+      ),
+    );
   }
 
   lines.push("");

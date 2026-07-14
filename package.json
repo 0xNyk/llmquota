@@ -31,7 +31,10 @@
     "llmquota": "tsx src/index.ts",
     "who": "tsx src/index.ts who",
     "doctor": "tsx src/index.ts doctor",
-    "tui": "tsx src/index.ts tui"
+    "tui": "tsx src/index.ts tui",
+    "test": "tsc && node dist/tui-mouse.test.js && node dist/catalog.test.js && node dist/tui-card-body.test.js && node dist/arena-moves.test.js && node dist/bus.test.js && node dist/provider-usage.test.js && node dist/grok-probe.test.js && node dist/reset-dates.test.js",
+    "test:mouse": "tsc && node dist/tui-mouse.test.js",
+    "scan": "tsx src/index.ts scan"
   },
   "engines": {
     "node": ">=22"

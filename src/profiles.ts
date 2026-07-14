@@ -9,6 +9,13 @@ export interface LlmquotaConfig {
   claudeProfiles?: string[];
   /** Include ~/.claude default slot (default: true). */
   includeClaudeDefault?: boolean;
+  /**
+   * Auto-detect other installed LLM CLIs (ollama, gemini, aider, …) and show
+   * them in the roster/doctor even without a quota probe (default: true).
+   */
+  detectExtraClis?: boolean;
+  /** Only list catalog CLIs that are installed in `scan` (default scan behavior). */
+  scanIncludeMissing?: boolean;
 }
 
 export interface ClaudeProfileTarget {
