@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import type { Meter, ProviderSnapshot } from "../types.js";
 import {
   availableInFromIso,
@@ -10,6 +11,13 @@ import {
   writeCache,
 } from "../util.js";
 import { detectClaude } from "./detect.js";
+
+/** Public Claude Code OAuth client id (embedded in the CLI). */
+const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const KEYCHAIN_SERVICE = "Claude Code-credentials";
+/** Refresh a minute before wall-clock expiry. */
+const EXPIRY_SKEW_MS = 60_000;
 
 interface ClaudeUsageWindow {
   utilization?: number;
@@ -26,78 +34,243 @@ interface ClaudeUsagePayload {
 
 interface ClaudeCreds {
   accessToken: string;
+  refreshToken?: string;
   subscriptionType?: string;
   rateLimitTier?: string;
   expiresAt?: number;
+  refreshTokenExpiresAt?: number;
+  scopes?: string[];
+  source: string;
+}
+
+interface ClaudeOauthBlob {
+  accessToken?: string;
+  refreshToken?: string;
+  subscriptionType?: string;
+  rateLimitTier?: string;
+  expiresAt?: number;
+  refreshTokenExpiresAt?: number;
+  scopes?: string[];
+}
+
+function nonEmpty(s: string | undefined | null): s is string {
+  return typeof s === "string" && s.length > 0;
+}
+
+function normalizeExpiresAt(raw: number | undefined): number | undefined {
+  if (raw == null || !Number.isFinite(raw) || raw <= 0) return undefined;
+  // Seconds vs ms heuristic (same idea as Cursor epochs).
+  return raw < 1e12 ? raw * 1000 : raw;
+}
+
+function accessExpired(creds: ClaudeCreds, skewMs = EXPIRY_SKEW_MS): boolean {
+  if (!nonEmpty(creds.accessToken)) return true;
+  const exp = normalizeExpiresAt(creds.expiresAt);
+  if (exp == null) return false; // unknown expiry — try the token
+  return exp <= Date.now() + skewMs;
+}
+
+function fromOauth(oauth: ClaudeOauthBlob | undefined, source: string): ClaudeCreds | null {
+  if (!oauth) return null;
+  const accessToken = nonEmpty(oauth.accessToken) ? oauth.accessToken : "";
+  const refreshToken = nonEmpty(oauth.refreshToken) ? oauth.refreshToken : undefined;
+  if (!accessToken && !refreshToken) return null;
+  return {
+    accessToken,
+    refreshToken,
+    subscriptionType: oauth.subscriptionType,
+    rateLimitTier: oauth.rateLimitTier,
+    expiresAt: normalizeExpiresAt(oauth.expiresAt),
+    refreshTokenExpiresAt: normalizeExpiresAt(oauth.refreshTokenExpiresAt),
+    scopes: oauth.scopes,
+    source,
+  };
+}
+
+function readKeychainRaw(): { claudeAiOauth?: ClaudeOauthBlob } | null {
+  try {
+    const raw = execFileSync(
+      "security",
+      ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+    if (!raw.startsWith("{")) return null;
+    return JSON.parse(raw) as { claudeAiOauth?: ClaudeOauthBlob };
+  } catch {
+    return null;
+  }
+}
+
+function readFileRaw(): { path: string; data: { claudeAiOauth?: ClaudeOauthBlob } } | null {
+  const path = home(".claude", ".credentials.json");
+  if (!existsSync(path)) return null;
+  try {
+    return {
+      path,
+      data: JSON.parse(readFileSync(path, "utf8")) as { claudeAiOauth?: ClaudeOauthBlob },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readEnvCreds(): ClaudeCreds | null {
+  const token = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+  if (!nonEmpty(token)) return null;
+  return {
+    accessToken: token,
+    source: "env:CLAUDE_CODE_OAUTH_TOKEN",
+  };
+}
+
+function scoreCreds(c: ClaudeCreds): number {
+  // Prefer live access tokens; then furthest expiry; then presence of refresh.
+  let s = 0;
+  if (nonEmpty(c.accessToken) && !accessExpired(c)) s += 1_000_000_000_000;
+  else if (nonEmpty(c.accessToken)) s += 1_000_000_000;
+  if (nonEmpty(c.refreshToken)) s += 1_000_000;
+  s += normalizeExpiresAt(c.expiresAt) ?? 0;
+  return s;
+}
+
+function mergeMeta(into: ClaudeCreds, from: ClaudeCreds): void {
+  if (!into.subscriptionType && from.subscriptionType) into.subscriptionType = from.subscriptionType;
+  if (!into.rateLimitTier && from.rateLimitTier) into.rateLimitTier = from.rateLimitTier;
+  if (!into.scopes?.length && from.scopes?.length) into.scopes = from.scopes;
+  if (!into.refreshToken && from.refreshToken) into.refreshToken = from.refreshToken;
+  if (!into.refreshTokenExpiresAt && from.refreshTokenExpiresAt) {
+    into.refreshTokenExpiresAt = from.refreshTokenExpiresAt;
+  }
 }
 
 function readClaudeCreds(): ClaudeCreds | null {
   const candidates: ClaudeCreds[] = [];
 
-  try {
-    const raw = execFileSync(
-      "security",
-      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-    ).trim();
-    if (raw.startsWith("{")) {
-      const parsed = JSON.parse(raw) as {
-        claudeAiOauth?: {
-          accessToken?: string;
-          subscriptionType?: string;
-          rateLimitTier?: string;
-          expiresAt?: number;
-        };
-      };
-      const oauth = parsed.claudeAiOauth;
-      if (oauth?.accessToken) {
-        candidates.push({
-          accessToken: oauth.accessToken,
-          subscriptionType: oauth.subscriptionType,
-          rateLimitTier: oauth.rateLimitTier,
-          expiresAt: oauth.expiresAt,
-        });
-      }
-    }
-  } catch {
-    /* fall through */
-  }
+  const env = readEnvCreds();
+  if (env) candidates.push(env);
 
-  const file = home(".claude", ".credentials.json");
-  if (existsSync(file)) {
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as {
-        claudeAiOauth?: {
-          accessToken?: string;
-          subscriptionType?: string;
-          rateLimitTier?: string;
-          expiresAt?: number;
-        };
-      };
-      const oauth = parsed.claudeAiOauth;
-      if (oauth?.accessToken) {
-        candidates.push({
-          accessToken: oauth.accessToken,
-          subscriptionType: oauth.subscriptionType,
-          rateLimitTier: oauth.rateLimitTier,
-          expiresAt: oauth.expiresAt,
-        });
-      }
-    } catch {
-      /* ignore */
+  const kc = fromOauth(readKeychainRaw()?.claudeAiOauth, "keychain");
+  if (kc) candidates.push(kc);
+
+  const file = readFileRaw();
+  const fileCreds = fromOauth(file?.data.claudeAiOauth, "file");
+  if (fileCreds) candidates.push(fileCreds);
+
+  // Metadata-only keychain (empty tokens) still carries plan labels
+  const kcMeta = readKeychainRaw()?.claudeAiOauth;
+  if (kcMeta && (!nonEmpty(kcMeta.accessToken) && !nonEmpty(kcMeta.refreshToken))) {
+    for (const c of candidates) {
+      if (!c.subscriptionType && kcMeta.subscriptionType) c.subscriptionType = kcMeta.subscriptionType;
+      if (!c.rateLimitTier && kcMeta.rateLimitTier) c.rateLimitTier = kcMeta.rateLimitTier;
     }
   }
 
   if (!candidates.length) return null;
-  // Prefer the token that expires furthest in the future
-  candidates.sort((a, b) => (b.expiresAt ?? 0) - (a.expiresAt ?? 0));
-  const best = candidates[0]!;
-  // Merge plan metadata from any candidate that has it
-  for (const c of candidates) {
-    if (!best.subscriptionType && c.subscriptionType) best.subscriptionType = c.subscriptionType;
-    if (!best.rateLimitTier && c.rateLimitTier) best.rateLimitTier = c.rateLimitTier;
-  }
+  candidates.sort((a, b) => scoreCreds(b) - scoreCreds(a));
+  const best = { ...candidates[0]! };
+  for (const c of candidates.slice(1)) mergeMeta(best, c);
   return best;
+}
+
+function persistClaudeCreds(creds: ClaudeCreds): void {
+  const oauth: ClaudeOauthBlob = {
+    accessToken: creds.accessToken,
+    refreshToken: creds.refreshToken,
+    expiresAt: creds.expiresAt,
+    refreshTokenExpiresAt: creds.refreshTokenExpiresAt,
+    scopes: creds.scopes,
+    subscriptionType: creds.subscriptionType,
+    rateLimitTier: creds.rateLimitTier,
+  };
+  // Drop undefined keys so we don't wipe optional fields with nulls awkwardly
+  for (const k of Object.keys(oauth) as Array<keyof ClaudeOauthBlob>) {
+    if (oauth[k] === undefined) delete oauth[k];
+  }
+
+  const filePath = home(".claude", ".credentials.json");
+  let data: { claudeAiOauth?: ClaudeOauthBlob } = {};
+  if (existsSync(filePath)) {
+    try {
+      data = JSON.parse(readFileSync(filePath, "utf8")) as typeof data;
+    } catch {
+      data = {};
+    }
+  }
+  data.claudeAiOauth = { ...data.claudeAiOauth, ...oauth };
+  writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+
+  const payload = JSON.stringify({ claudeAiOauth: data.claudeAiOauth });
+  try {
+    execFileSync(
+      "security",
+      [
+        "add-generic-password",
+        "-U",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        userInfo().username,
+        "-w",
+        payload,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  } catch {
+    /* file write is enough for detection; Keychain may be locked */
+  }
+}
+
+async function refreshClaudeAccess(
+  creds: ClaudeCreds,
+): Promise<{ ok: true; creds: ClaudeCreds } | { ok: false; error: string }> {
+  if (!nonEmpty(creds.refreshToken)) {
+    return { ok: false, error: "no refresh token" };
+  }
+
+  const res = await fetchJson(CLAUDE_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "User-Agent": "claude-cli/2.1.207 (external, cli)",
+    },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      refresh_token: creds.refreshToken,
+      client_id: CLAUDE_OAUTH_CLIENT_ID,
+    }),
+    timeoutMs: 15_000,
+  });
+
+  if (!res.ok || !res.json || typeof res.json !== "object") {
+    const desc =
+      (res.json as { error_description?: string; error?: string } | null)?.error_description ||
+      (res.json as { error?: string } | null)?.error ||
+      res.text.slice(0, 160);
+    return { ok: false, error: `refresh failed HTTP ${res.status}: ${desc}` };
+  }
+
+  const data = res.json as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
+  if (!nonEmpty(data.access_token)) {
+    return { ok: false, error: "refresh response missing access_token" };
+  }
+
+  const next: ClaudeCreds = {
+    ...creds,
+    accessToken: data.access_token,
+    refreshToken: nonEmpty(data.refresh_token) ? data.refresh_token : creds.refreshToken,
+    expiresAt:
+      data.expires_in != null ? Date.now() + data.expires_in * 1000 : creds.expiresAt,
+    source: `${creds.source}+refresh`,
+  };
+
+  // Persist immediately — Anthropic rotates refresh tokens; losing the new one bricks auth.
+  persistClaudeCreds(next);
+  return { ok: true, creds: next };
 }
 
 function planLabel(creds: ClaudeCreds | null): string | null {
@@ -165,23 +338,34 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
     return base;
   }
 
-  const creds = readClaudeCreds();
+  let creds = readClaudeCreds();
   if (!creds) {
     base.hint = "Run `claude` and complete `/login`.";
     return base;
   }
 
-  if (creds.expiresAt && creds.expiresAt < Date.now()) {
-    base.auth = "expired";
-    base.plan = planLabel(creds);
-    base.subscription = subscriptionLabel(creds);
-    base.hint = "Token expired — open `claude` and re-auth.";
-    return base;
+  base.plan = planLabel(creds);
+  base.subscription = subscriptionLabel(creds);
+
+  if (accessExpired(creds)) {
+    if (nonEmpty(creds.refreshToken)) {
+      const refreshed = await refreshClaudeAccess(creds);
+      if (refreshed.ok) {
+        creds = refreshed.creds;
+      } else {
+        base.auth = "expired";
+        base.error = refreshed.error;
+        base.hint = "Token expired — open `claude` and re-auth (`/login`).";
+        return base;
+      }
+    } else {
+      base.auth = "expired";
+      base.hint = "Token expired — open `claude` and re-auth (`/login`).";
+      return base;
+    }
   }
 
   base.auth = "ok";
-  base.plan = planLabel(creds);
-  base.subscription = subscriptionLabel(creds);
 
   const cacheKey = "claude-usage";
   if (!opts.refresh) {
@@ -202,6 +386,34 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
       "Content-Type": "application/json",
     },
   });
+
+  if (res.status === 401 && nonEmpty(creds.refreshToken)) {
+    const refreshed = await refreshClaudeAccess(creds);
+    if (refreshed.ok) {
+      creds = refreshed.creds;
+      const retry = await fetchJson("https://api.anthropic.com/api/oauth/usage", {
+        headers: {
+          Authorization: `Bearer ${creds.accessToken}`,
+          "anthropic-beta": "oauth-2025-04-20",
+          "User-Agent": `claude-cli/${bin.version || "2.1.0"} (external, cli)`,
+          "Content-Type": "application/json",
+        },
+      });
+      if (retry.ok && retry.json && typeof retry.json === "object") {
+        const payload = retry.json as ClaudeUsagePayload;
+        writeCache(cacheKey, payload);
+        base.windows = collectWindows(payload);
+        base.source = "oauth_usage(refreshed)";
+        base.score = headroomScore(base.windows.map((w) => w.usedPercent));
+        return base;
+      }
+    } else {
+      base.auth = "expired";
+      base.error = refreshed.error;
+      base.hint = "Token expired — open `claude` and re-auth (`/login`).";
+      return base;
+    }
+  }
 
   if (res.status === 429) {
     base.error = "usage API rate-limited (try again in a minute)";

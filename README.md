@@ -33,7 +33,7 @@ ln -sfn "$(pwd)/llmquota" ~/.local/bin/llmquota
 
 | Provider | How |
 |---|---|
-| Claude | Keychain / `.credentials.json` → Anthropic OAuth usage (cached ~90s) |
+| Claude | Keychain / `.credentials.json` (+ `CLAUDE_CODE_OAUTH_TOKEN`) → refresh via `platform.claude.com` → OAuth usage (cached ~90s) |
 | Codex | `~/.codex/auth.json` → ChatGPT WHAM usage |
 | Cursor | Cursor `state.vscdb` token → dashboard period usage |
 | Grok | `~/.grok/auth.json` JWT + API probe (SuperGrok weekly pool not on a stable public endpoint yet) |
