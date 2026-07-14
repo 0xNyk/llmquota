@@ -62,6 +62,12 @@ function statusTag(p: ProviderSnapshot): string {
   if (p.auth === "missing") return "not logged in";
   if (p.auth === "expired") return "auth expired";
   if (p.auth === "error") return "auth error";
+  // Prefer aggregate score so a maxed sub-window with top-up left isn't false KO
+  if (p.score != null) {
+    if (p.score >= 100) return "KO";
+    if (p.score >= 90) return "limping";
+    return "ready";
+  }
   if (p.windows.some((w) => (w.usedPercent ?? 0) >= 100)) return "KO";
   if (p.windows.some((w) => (w.usedPercent ?? 0) >= 90)) return "limping";
   return "ready";
@@ -188,7 +194,7 @@ export function renderDoctor(report: RosterReport, opts: CliOptions): string {
 export function renderRefs(report: RosterReport, opts: CliOptions): string {
   const lines: string[] = [];
   lines.push(c(opts, BOLD, "llmquota referrals"));
-  lines.push(c(opts, DIM, "copy with: llmquota copy <claude|codex|cursor|grok>"));
+  lines.push(c(opts, DIM, "copy with: llmquota copy <claude|codex|cursor|grok|hermes>"));
   lines.push("");
   const seen = new Set<string>();
   for (const p of report.providers) {

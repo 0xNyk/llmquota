@@ -8,5 +8,8 @@
   },
   "grok": {
     "link": ""
+  },
+  "hermes": {
+    "link": "https://portal.nousresearch.com"
   }
 }

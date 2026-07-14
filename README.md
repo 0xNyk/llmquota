@@ -1,6 +1,6 @@
 # llmquota
 
-Fun terminal **roster** for Claude Code · Codex · Cursor · Grok rate limits — who's installed, what's left on the plan, and when you can fight again.
+Fun terminal **roster** for Claude Code · Codex · Cursor · Grok · **Hermes (Nous Portal)** rate limits — who's installed, what's left on the plan, and when you can fight again.
 
 ```bash
 pnpm install
@@ -36,7 +36,7 @@ ln -sfn "$(pwd)/llmquota" ~/.local/bin/llmquota
 | Claude | `~/.claude` + each [silo](https://github.com/0xNyk/silo) profile under `~/.silo/profiles/*` → refresh via `platform.claude.com` → OAuth usage (cached ~90s). Keychain only for the default slot. |
 | Codex | `~/.codex/auth.json` → ChatGPT WHAM usage |
 | Cursor | Cursor `state.vscdb` token → dashboard period usage |
-| Grok | Every entry in `~/.grok/auth.json` (JWT + API probe) |
+| Hermes | `~/.hermes/auth.json` Nous OAuth → `portal.nousresearch.com/api/oauth/account` (subscription + credits). Login: `hermes portal`. |
 
 **Read-only.** No account switching (use **silo** to launch Claude as a profile).
 

@@ -50,7 +50,7 @@ function parseArgs(argv: string[]): CliOptions & {
 }
 
 function helpText(): string {
-  return `llmquota — roster of Claude / Codex / Cursor / Grok rate limits
+  return `llmquota — roster of Claude / Codex / Cursor / Grok / Hermes (Nous) rate limits
 
 Usage:
   llmquota              live TUI arena (default in a TTY)
@@ -59,11 +59,11 @@ Usage:
   llmquota who          one-liner: who has headroom
   llmquota doctor       PATH + auth diagnostics
   llmquota refs         show referral / affiliate codes
-  llmquota copy <name>  copy a referral link (claude|codex|cursor|grok)
+  llmquota copy <name>  copy a referral link (claude|codex|cursor|grok|hermes)
   llmquota --json       machine-readable snapshot
   llmquota --plain      no ANSI colors (text mode)
   llmquota --style emoji
-  llmquota --refresh    bypass Claude usage cache (~90s)
+  llmquota --refresh    bypass usage caches
 
 TUI keys:  1-9 focus  ·  tab next  ·  c copy ref  ·  r refresh  ·  q quit
 
@@ -72,6 +72,10 @@ Multi-profile (Claude via silo):
   Only slots with credentials are shown by default (plus silo default).
   Optional ~/.config/llmquota/config.json:
     { "includeNeedLogin": false, "claudeProfiles": ["personal","work"] }
+
+Hermes / Nous Portal:
+  Reads ~/.hermes/auth.json (Nous OAuth) → portal.nousresearch.com/api/oauth/account
+  Login: hermes portal
 
 Referrals:
   Claude auto-reads ~/.claude.json guest-pass link when available.

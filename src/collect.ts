@@ -4,17 +4,19 @@ import { collectCodex } from "./providers/codex.js";
 import { collectCursor } from "./providers/cursor.js";
 import { pathCollisionNotes } from "./providers/detect.js";
 import { collectGrokAll } from "./providers/grok.js";
+import { collectHermesAll } from "./providers/hermes.js";
 import { attachReferrals } from "./referrals.js";
 
 export async function collectAll(opts: { refresh?: boolean } = {}): Promise<RosterReport> {
-  const [claude, codex, cursor, grok] = await Promise.all([
+  const [claude, codex, cursor, grok, hermes] = await Promise.all([
     collectClaudeAll({ refresh: opts.refresh }),
     collectCodex(),
     collectCursor(),
     collectGrokAll(),
+    collectHermesAll({ refresh: opts.refresh }),
   ]);
 
-  const providers = attachReferrals([...claude, codex, cursor, ...grok]);
+  const providers = attachReferrals([...claude, codex, cursor, ...grok, ...hermes]);
   providers.sort(compareSnapshots);
 
   return {
@@ -30,6 +32,7 @@ const PROVIDER_ORDER: Record<string, number> = {
   codex: 1,
   cursor: 2,
   grok: 3,
+  hermes: 4,
 };
 
 function compareSnapshots(a: ProviderSnapshot, b: ProviderSnapshot): number {

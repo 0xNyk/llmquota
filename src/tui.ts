@@ -92,6 +92,11 @@ function statusTag(p: ProviderSnapshot): { label: string; color: string } {
   if (p.auth === "missing") return { label: "NO LOGIN", color: YELLOW };
   if (p.auth === "expired") return { label: "AUTH EXPIRED", color: RED };
   if (p.auth === "error") return { label: "AUTH ERROR", color: RED };
+  if (p.score != null) {
+    if (p.score >= 100) return { label: "KO", color: RED };
+    if (p.score >= 90) return { label: "LIMPING", color: YELLOW };
+    return { label: "READY", color: GREEN };
+  }
   if (p.windows.some((w) => (w.usedPercent ?? 0) >= 100)) return { label: "KO", color: RED };
   if (p.windows.some((w) => (w.usedPercent ?? 0) >= 90)) return { label: "LIMPING", color: YELLOW };
   return { label: "READY", color: GREEN };

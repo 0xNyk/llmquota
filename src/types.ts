@@ -1,6 +1,6 @@
 export type AuthState = "ok" | "missing" | "expired" | "error";
 
-export type ProviderId = "claude" | "codex" | "cursor" | "grok";
+export type ProviderId = "claude" | "codex" | "cursor" | "grok" | "hermes";
 
 export interface Meter {
   name: string;
