@@ -11,16 +11,19 @@ const GREEN = `${ESC}[32m`;
 const YELLOW = `${ESC}[33m`;
 const BLUE = `${ESC}[34m`;
 const CYAN = `${ESC}[36m`;
+const WHITE = `${ESC}[37m`;
 
-/** Dark charcoal arena — base + faint grit (no purple). */
-const BG = `${ESC}[48;5;234m`;
+/** Charcoal arena — textured, no purple. */
+const BG = `${ESC}[48;5;233m`;
 const BG_PANEL = `${ESC}[48;5;235m`;
-const FG_GRIT = `${ESC}[38;5;237m`;
+const BG_HERO = `${ESC}[48;5;236m`;
+const FG_GRIT = `${ESC}[38;5;236m`;
 const FG_MUTE = `${ESC}[38;5;240m`;
-const FOOTER_BG = `${ESC}[48;5;236m`;
+const FG_SOFT = `${ESC}[38;5;245m`;
+const FOOTER_BG = `${ESC}[48;5;235m`;
 
 const REFRESH_MS = 45_000;
-const CARD_MIN_INNER = 28;
+const CARD_MIN_INNER = 30;
 const GAP = 2;
 const MARGIN = 1;
 
@@ -42,16 +45,15 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-function visibleLen(s: string): number {
+function vlen(s: string): number {
   return stripAnsi(s).length;
 }
 
-/** Stable grit glyph so redraws don't flicker. */
 function grit(row: number, col: number): string {
-  const n = (row * 131 + col * 47 + (row ^ col) * 3) & 31;
+  const n = (row * 131 + col * 47 + (row ^ col) * 3) & 63;
   if (n === 0) return "·";
-  if (n === 1 || n === 2) return "░";
-  if (n === 3) return "‧";
+  if (n === 1) return "░";
+  if (n === 2 || n === 3) return "‧";
   return " ";
 }
 
@@ -63,7 +65,7 @@ function texturedPad(row: number, startCol: number, width: number): string {
 }
 
 function padVisible(s: string, width: number, row: number, startCol: number): string {
-  const len = visibleLen(s);
+  const len = vlen(s);
   if (len > width) {
     const plain = stripAnsi(s);
     return plain.slice(0, Math.max(0, width - 1)) + "…";
@@ -73,62 +75,12 @@ function padVisible(s: string, width: number, row: number, startCol: number): st
 }
 
 function paintLine(content: string, cols: number, row: number): string {
-  // Wrap entire line in BG so empty cells stay dark
   const body = padVisible(`${BG}${content}`, cols, row, 0);
-  // Ensure we start with BG even if content has its own colors
   return `${BG}${body}${RESET}`;
 }
 
-function bar(used: number | null, width: number): string {
-  if (used == null) return `${DIM}${"·".repeat(width)}${RESET}`;
-  const pct = Math.max(0, Math.min(100, used));
-  const filled = Math.round((pct / 100) * width);
-  const body = "█".repeat(filled) + "░".repeat(Math.max(0, width - filled));
-  return `${levelColor(level(used))}${body}${RESET}`;
-}
-
-function statusTag(p: ProviderSnapshot): { label: string; color: string } {
-  if (!p.installed) return { label: "MISSING", color: DIM };
-  if (p.auth === "missing") return { label: "NO LOGIN", color: YELLOW };
-  if (p.auth === "expired") return { label: "AUTH EXPIRED", color: RED };
-  if (p.auth === "error") return { label: "AUTH ERROR", color: RED };
-  if (p.score != null) {
-    if (p.score >= 100) return { label: "KO", color: RED };
-    if (p.score >= 90) return { label: "LIMPING", color: YELLOW };
-    return { label: "READY", color: GREEN };
-  }
-  if (p.windows.some((w) => (w.usedPercent ?? 0) >= 100)) return { label: "KO", color: RED };
-  if (p.windows.some((w) => (w.usedPercent ?? 0) >= 90)) return { label: "LIMPING", color: YELLOW };
-  return { label: "READY", color: GREEN };
-}
-
-function meterRow(m: Meter, contentWidth: number): string {
-  const labelW = Math.min(10, Math.max(6, Math.floor(contentWidth * 0.18)));
-  const pctW = 4;
-  const resetW = 7;
-  const barW = Math.max(10, contentWidth - labelW - pctW - resetW - 4);
-  const pct = m.usedPercent == null ? "  ?" : String(Math.round(m.usedPercent)).padStart(3);
-  const reset = (m.availableIn || "—").slice(0, resetW).padEnd(resetW);
-  const label = m.label.slice(0, labelW).padEnd(labelW);
-  return `${label} ${bar(m.usedPercent, barW)} ${pct}% ${DIM}${reset}${RESET}`;
-}
-
-function boxLines(title: string, body: string[], inner: number, focused: boolean): string[] {
-  const titleText = title.slice(0, Math.max(1, inner - 4));
-  const dash = Math.max(1, inner - visibleLen(titleText) - 3);
-  const focusMark = focused ? "▌" : "─";
-  const top = `╭${focusMark} ${titleText} ${"─".repeat(dash)}╮`;
-  const bottom = `╰${"─".repeat(inner)}╯`;
-  const mid = body.map((line) => `│ ${padVisiblePlain(line, inner - 2)} │`);
-  const cardH = Math.max(8, body.length + 2);
-  while (mid.length < cardH - 2) {
-    mid.push(`│ ${" ".repeat(inner - 2)} │`);
-  }
-  return [top, ...mid.slice(0, cardH - 2), bottom];
-}
-
-function padVisiblePlain(s: string, width: number): string {
-  const len = visibleLen(s);
+function padPlain(s: string, width: number): string {
+  const len = vlen(s);
   if (len >= width) {
     const plain = stripAnsi(s);
     return plain.slice(0, Math.max(0, width - 1)) + "…";
@@ -136,97 +88,190 @@ function padVisiblePlain(s: string, width: number): string {
   return s + " ".repeat(width - len);
 }
 
-function providerCard(
-  p: ProviderSnapshot,
+function bar(used: number | null, width: number): string {
+  if (used == null) return `${FG_MUTE}${"┈".repeat(width)}${RESET}`;
+  const pct = Math.max(0, Math.min(100, used));
+  const filled = Math.round((pct / 100) * width);
+  const body = "█".repeat(filled) + "░".repeat(Math.max(0, width - filled));
+  return `${levelColor(level(used))}${body}${RESET}`;
+}
+
+interface StatusInfo {
+  label: string;
+  short: string;
+  color: string;
+  kind: "ready" | "warn" | "ko" | "auth" | "missing";
+}
+
+function statusInfo(p: ProviderSnapshot): StatusInfo {
+  if (!p.installed) return { label: "missing", short: "—", color: DIM, kind: "missing" };
+  if (p.auth === "missing") return { label: "no login", short: "···", color: YELLOW, kind: "auth" };
+  if (p.auth === "expired") return { label: "expired", short: "!", color: RED, kind: "auth" };
+  if (p.auth === "error") return { label: "error", short: "!", color: RED, kind: "auth" };
+  if (p.score != null) {
+    if (p.score >= 100) return { label: "ko", short: "✕", color: RED, kind: "ko" };
+    if (p.score >= 90) return { label: "limping", short: "!", color: YELLOW, kind: "warn" };
+    return { label: "ready", short: "●", color: GREEN, kind: "ready" };
+  }
+  if (p.windows.some((w) => (w.usedPercent ?? 0) >= 100)) {
+    return { label: "ko", short: "✕", color: RED, kind: "ko" };
+  }
+  if (p.windows.some((w) => (w.usedPercent ?? 0) >= 90)) {
+    return { label: "limping", short: "!", color: YELLOW, kind: "warn" };
+  }
+  return { label: "ready", short: "●", color: GREEN, kind: "ready" };
+}
+
+function isDormant(p: ProviderSnapshot): boolean {
+  return !p.installed || p.auth === "missing";
+}
+
+function meterRow(m: Meter, contentWidth: number): string {
+  const labelW = Math.min(8, Math.max(5, Math.floor(contentWidth * 0.14)));
+  const rightW = 11;
+  const barW = Math.max(8, contentWidth - labelW - rightW - 2);
+  const label = m.label.slice(0, labelW).padEnd(labelW);
+
+  if (m.usedPercent == null) {
+    const detail = (m.detail || "—").slice(0, contentWidth - labelW - 2);
+    return `${FG_SOFT}${label}${RESET} ${DIM}${detail}${RESET}`;
+  }
+
+  const pct = String(Math.round(m.usedPercent)).padStart(3);
+  const reset = (m.availableIn || "").slice(0, 6).padStart(6);
+  return `${FG_SOFT}${label}${RESET} ${bar(m.usedPercent, barW)} ${levelColor(level(m.usedPercent))}${pct}%${RESET}${DIM}${reset ? ` ${reset}` : ""}${RESET}`;
+}
+
+function boxCard(
+  title: string,
+  body: string[],
   inner: number,
   focused: boolean,
+  accent: string,
 ): string[] {
-  const st = statusTag(p);
-  const sub = p.subscription || (p.plan ? `${p.id} ${p.plan}` : null);
-  const titleMark = p.active ? `${p.displayName} ★` : p.displayName;
-  const lines: string[] = [];
-  lines.push(`${st.color}${BOLD}${st.label}${RESET}`);
-  if (sub) lines.push(`${CYAN}sub${RESET}  ${sub}`);
-  else lines.push(`${DIM}sub  unknown${RESET}`);
-  if (p.account) lines.push(`${DIM}${p.account}${RESET}`);
-  if (p.referral?.label) {
-    const code = p.referral.code ? `${p.referral.code} ` : "";
-    const link = (p.referral.link || p.referral.label).slice(0, Math.max(12, inner - 10));
-    lines.push(`${CYAN}ref${RESET}  ${code}${link}`);
-  }
-
-  if (!p.installed) {
-    lines.push(`${DIM}not installed${RESET}`);
-    if (p.hint) lines.push(`${DIM}${p.hint}${RESET}`);
-  } else if (p.auth !== "ok") {
-    lines.push(`${DIM}${(p.hint || p.error || "re-auth needed").slice(0, inner - 4)}${RESET}`);
-  } else if (!p.windows.length) {
-    lines.push(`${DIM}no live meters${RESET}`);
-    if (p.hint) lines.push(`${DIM}${p.hint.slice(0, inner - 4)}${RESET}`);
-  } else {
-    for (const m of p.windows.slice(0, 4)) {
-      lines.push(meterRow(m, inner - 2));
-    }
-    if (p.hint && p.windows.some((w) => (w.usedPercent ?? 0) >= 90)) {
-      lines.push(`${DIM}${p.hint.slice(0, inner - 4)}${RESET}`);
-    }
-  }
-
-  const primary = primaryMeter(p);
-  const borderColor = focused
-    ? CYAN
-    : levelColor(level(primary?.usedPercent ?? (p.auth === "ok" ? 0 : null)));
-  const boxed = boxLines(titleMark, lines, inner, focused);
-  return boxed.map((line, i) => {
-    if (i === 0 || i === boxed.length - 1) {
-      return `${borderColor}${line}${RESET}`;
-    }
+  const focusGlyph = focused ? "◆" : " ";
+  const titleText = `${focusGlyph} ${title}`.slice(0, Math.max(1, inner - 2));
+  const dash = Math.max(0, inner - vlen(titleText) - 1);
+  const top = `╭${titleText} ${"─".repeat(dash)}╮`;
+  const bottom = `╰${"─".repeat(inner)}╯`;
+  const mid = body.map((line) => `│ ${padPlain(line, inner - 2)} │`);
+  return [top, ...mid, bottom].map((line, i) => {
+    if (i === 0 || i === body.length + 1) return `${accent}${line}${RESET}`;
     return `${BG_PANEL}${line}${RESET}`;
   });
 }
 
-function zipRows(left: string[], right: string[], gap: number, rowOffset: number): string[] {
-  const rows: string[] = [];
-  const n = Math.max(left.length, right.length);
-  const leftW = left[0] ? visibleLen(left[0]) : 0;
-  for (let i = 0; i < n; i++) {
-    const L = left[i] || texturedPad(rowOffset + i, 0, leftW);
-    const R = right[i] || "";
-    const spacer = texturedPad(rowOffset + i, leftW, gap);
-    rows.push(`${L}${spacer}${R}`);
+function fighterCard(p: ProviderSnapshot, inner: number, focused: boolean): string[] {
+  const st = statusInfo(p);
+  const accent = focused
+    ? CYAN
+    : st.kind === "ready"
+      ? GREEN
+      : st.kind === "warn"
+        ? YELLOW
+        : st.kind === "ko" || st.kind === "auth"
+          ? RED
+          : FG_MUTE;
+
+  const title = p.displayName;
+  const lines: string[] = [];
+
+  // Status + plan on one line
+  const plan = (p.subscription || p.plan || "—").replace(/^Claude\s+/i, "").replace(/^Nous\s+/i, "Nous ");
+  lines.push(
+    `${st.color}${BOLD}${st.short}${RESET} ${st.color}${st.label}${RESET}  ${DIM}${plan.slice(0, Math.max(8, inner - 14))}${RESET}`,
+  );
+
+  if (p.auth === "ok" && p.windows.length) {
+    for (const m of p.windows.slice(0, 3)) {
+      lines.push(meterRow(m, inner - 2));
+    }
+  } else if (p.auth !== "ok") {
+    const hint = (p.hint || p.error || "sign in required").replace(/\s+/g, " ");
+    lines.push(`${DIM}${hint.slice(0, inner - 4)}${RESET}`);
+  } else {
+    lines.push(`${DIM}no meters yet${RESET}`);
   }
-  return rows;
+
+  if (focused && p.active) {
+    lines.push(`${CYAN}★ active profile${RESET}`);
+  }
+
+  return boxCard(title, lines, inner, focused, accent);
+}
+
+function dormantChip(p: ProviderSnapshot, width: number, focused: boolean): string {
+  const st = statusInfo(p);
+  const mark = focused ? `${CYAN}▸${RESET}` : `${DIM}·${RESET}`;
+  const body = `${mark} ${p.displayName}  ${st.color}${st.label}${RESET}  ${DIM}${(p.hint || "").slice(0, 28)}${RESET}`;
+  return padPlain(body, width);
 }
 
 interface Layout {
   cols: number;
   rows: number;
-  useGrid: boolean;
+  columns: 1 | 2 | 3;
   inner: number;
   margin: number;
   gap: number;
 }
 
-function computeLayout(): Layout {
+function computeLayout(cardCount: number): Layout {
   const cols = Math.max(40, process.stdout.columns || 80);
   const rows = Math.max(16, process.stdout.rows || 24);
   const margin = MARGIN;
   const gap = GAP;
-  // 2-col when we can fit two decent cards
-  const useGrid = cols >= 72;
-  let inner: number;
-  if (useGrid) {
-    // Fill width: margin + card + gap + card + margin = cols
-    // each card outer width = inner + 2 (borders already in box using inner as inside width between corners)
-    // box outer visible width = inner + 2
-    const usable = cols - margin * 2 - gap;
-    const cardOuter = Math.floor(usable / 2);
-    inner = Math.max(CARD_MIN_INNER, cardOuter - 2);
-  } else {
-    const cardOuter = cols - margin * 2;
-    inner = Math.max(CARD_MIN_INNER, cardOuter - 2);
+
+  let columns: 1 | 2 | 3 = 1;
+  if (cols >= 120 && cardCount >= 3) columns = 3;
+  else if (cols >= 72) columns = 2;
+
+  const usable = cols - margin * 2 - gap * (columns - 1);
+  const cardOuter = Math.floor(usable / columns);
+  const inner = Math.max(CARD_MIN_INNER, cardOuter - 2);
+
+  return { cols, rows, columns, inner, margin, gap };
+}
+
+function zipN(cards: string[][], gap: number, rowOffset: number): string[] {
+  if (!cards.length) return [];
+  const rows: string[] = [];
+  const height = Math.max(...cards.map((c) => c.length));
+  const widths = cards.map((c) => (c[0] ? vlen(c[0]) : 0));
+
+  for (let r = 0; r < height; r++) {
+    let line = "";
+    let col = 0;
+    for (let i = 0; i < cards.length; i++) {
+      if (i > 0) {
+        line += texturedPad(rowOffset + r, col, gap);
+        col += gap;
+      }
+      const cell = cards[i]![r] || texturedPad(rowOffset + r, col, widths[i]!);
+      line += cell;
+      col += widths[i]!;
+    }
+    rows.push(line);
   }
-  return { cols, rows, useGrid, inner, margin, gap };
+  return rows;
+}
+
+function heroPick(report: RosterReport, cols: number): string {
+  const pick = report.pick.line.replace(/^→\s*/, "").replace(/\s*★/, "");
+  const inner = Math.max(20, cols - 4);
+  const text = `${BOLD}${WHITE}→  ${pick}${RESET}`;
+  return `${BG_HERO}  ${padPlain(text, inner)}${RESET}`;
+}
+
+function focusStrip(p: ProviderSnapshot | undefined, cols: number): string {
+  if (!p) return "";
+  const bits: string[] = [`${CYAN}${p.displayName}${RESET}`];
+  if (p.account) bits.push(`${DIM}${p.account}${RESET}`);
+  if (p.hint) bits.push(`${DIM}${p.hint.replace(/\s+/g, " ").slice(0, 48)}${RESET}`);
+  if (p.referral?.code) bits.push(`${FG_SOFT}ref ${p.referral.code}${RESET}`);
+  else if (p.referral?.label) bits.push(`${FG_SOFT}c · copy ref${RESET}`);
+  const line = bits.join(`${DIM}  ·  ${RESET}`);
+  return `  ${padPlain(line, cols - 4)}`;
 }
 
 function frame(
@@ -237,71 +282,99 @@ function frame(
     lastRefresh?: string;
     focus?: number;
     toast?: string;
+    showDormant?: boolean;
   },
 ): string {
-  const layout = computeLayout();
-  const { cols, rows, useGrid, inner, margin, gap } = layout;
-  const out: string[] = [];
+  const showDormant = opts.showDormant !== false;
+  const providers = report?.providers ?? [];
+  const focusIdx = opts.focus ?? 0;
 
-  const header =
-    `${BOLD}${CYAN} llmquota${RESET}${FG_MUTE}  arena${RESET}` +
-    `${DIM}  ${opts.lastRefresh || ""}${RESET}` +
-    `${DIM}  ${cols}×${rows}${RESET}`;
-  out.push(header);
-  out.push("");
+  // Visual order: ready fighters first, then limping/ko, dormant last
+  const indexed = providers.map((p, i) => ({ p, i }));
+  const rank = (p: ProviderSnapshot): number => {
+    const st = statusInfo(p);
+    if (st.kind === "ready") return 0;
+    if (st.kind === "warn") return 1;
+    if (st.kind === "ko") return 2;
+    if (st.kind === "auth") return 3;
+    return 4;
+  };
+  indexed.sort((a, b) => {
+    const d = rank(a.p) - rank(b.p);
+    if (d) return d;
+    return a.i - b.i;
+  });
+
+  const fighters = indexed.filter((x) => !isDormant(x.p));
+  const dormant = indexed.filter((x) => isDormant(x.p));
+
+  const layout = computeLayout(Math.max(1, fighters.length));
+  const { cols, rows, columns, inner, margin, gap } = layout;
+  const out: string[] = [];
+  const indent = " ".repeat(margin);
+
+  // Header — brand + time only
+  out.push(
+    ` ${BOLD}${WHITE}llmquota${RESET}${FG_MUTE}  arena${RESET}` +
+      `${DIM}  ${opts.lastRefresh || ""}${RESET}`,
+  );
 
   if (opts.loading && !report) {
-    out.push(`${DIM}  gathering fighters…${RESET}`);
+    out.push("");
+    out.push(`${DIM}  reading quotas…${RESET}`);
   } else if (opts.error && !report) {
+    out.push("");
     out.push(`${RED}  ${opts.error}${RESET}`);
   } else if (report) {
-    const cards = report.providers.map((p, i) =>
-      providerCard(p, inner, opts.focus === i),
-    );
+    out.push("");
+    out.push(heroPick(report, cols));
+    out.push("");
 
-    const indent = " ".repeat(margin);
-    if (useGrid) {
-      for (let i = 0; i < cards.length; i += 2) {
+    // Fighter cards in responsive grid (original index preserved for focus)
+    const cards = fighters.map(({ p, i }) => fighterCard(p, inner, focusIdx === i));
+
+    if (cards.length) {
+      for (let i = 0; i < cards.length; i += columns) {
         if (i > 0) out.push("");
-        const left = cards[i]!;
-        const right = cards[i + 1];
-        if (right) {
-          out.push(
-            ...zipRows(left, right, gap, out.length).map((l) => indent + l),
-          );
-        } else {
-          for (const line of left) out.push(indent + line);
-        }
+        const slice = cards.slice(i, i + columns);
+        out.push(...zipN(slice, gap, out.length).map((l) => indent + l));
       }
-    } else {
-      for (const card of cards) {
-        for (const line of card) out.push(indent + line);
-        out.push("");
+    }
+
+    // Dormant strip — one line each, or collapsed count
+    if (dormant.length) {
+      out.push("");
+      if (showDormant) {
+        out.push(`  ${DIM}sidelined${RESET}`);
+        for (const { p, i } of dormant) {
+          out.push(
+            `  ${dormantChip(p, cols - 4, focusIdx === i)}`,
+          );
+        }
+      } else {
+        out.push(
+          `  ${DIM}sidelined  ${dormant.length}  ·  press ${RESET}${CYAN}h${RESET}${DIM} to show${RESET}`,
+        );
       }
     }
 
     out.push("");
-    out.push(`  ${CYAN}${BOLD}${report.pick.line}${RESET}`);
+    out.push(focusStrip(providers[focusIdx], cols));
     if (opts.loading) out.push(`  ${DIM}refreshing…${RESET}`);
     if (opts.toast) out.push(`  ${GREEN}${opts.toast}${RESET}`);
-    for (const note of report.pathNotes.slice(0, 1)) {
-      out.push(`  ${YELLOW}⚠${RESET} ${DIM}${note.slice(0, Math.max(20, cols - 6))}${RESET}`);
-    }
   }
 
-  out.push("");
-  const n = report?.providers.length ?? 0;
-  const focusHint =
-    n <= 9 ? `1-${Math.min(9, Math.max(1, n))} focus` : `1-9 focus · tab next`;
+  // Footer
+  const n = providers.length;
+  const focusHint = n <= 9 ? `1–${n}` : "1–9";
   const footer =
-    `${FOOTER_BG}${DIM} ${focusHint} · c copy ref · r refresh · q quit · silo profiles · auto ${Math.round(REFRESH_MS / 1000)}s ${RESET}`;
-  out.push(footer);
+    `${FOOTER_BG}${DIM} ${focusHint}/tab/j/k  ·  c ref  ·  h sidelined  ·  r refresh  ·  q  ·  ${Math.round(REFRESH_MS / 1000)}s ${RESET}`;
+  while (out.length < rows - 1) out.push("");
+  out[rows - 1] = footer;
 
-  // Paint full canvas with textured dark background
   const painted: string[] = [];
   for (let r = 0; r < rows; r++) {
-    const line = out[r] ?? "";
-    painted.push(paintLine(line, cols, r));
+    painted.push(paintLine(out[r] ?? "", cols, r));
   }
   return painted.join("\n");
 }
@@ -331,6 +404,7 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
   let focus = 0;
   let toast: string | null = null;
   let toastTimer: NodeJS.Timeout | null = null;
+  let showDormant = false;
 
   const showToast = (msg: string): void => {
     toast = msg;
@@ -338,12 +412,22 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
     toastTimer = setTimeout(() => {
       toast = null;
       redraw();
-    }, 2500);
+    }, 2200);
     redraw();
+  };
+
+  const clampFocus = (): void => {
+    const n = report?.providers.length ?? 0;
+    if (!n) {
+      focus = 0;
+      return;
+    }
+    focus = ((focus % n) + n) % n;
   };
 
   const redraw = (): void => {
     if (closed) return;
+    clampFocus();
     writeScreen(
       frame(report, {
         loading,
@@ -353,6 +437,7 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
           : undefined,
         focus,
         toast: toast || undefined,
+        showDormant,
       }),
     );
   };
@@ -363,6 +448,13 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
     redraw();
     try {
       report = await collectAll({ refresh: force || opts.refresh });
+      // Prefer focusing the pick / first ready fighter
+      if (report.pick.id) {
+        const idx = report.providers.findIndex(
+          (p) => p.id === report!.pick.id && p.auth === "ok" && (p.score == null || p.score < 95),
+        );
+        if (idx >= 0) focus = idx;
+      }
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -395,6 +487,11 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
       void load(true);
       return;
     }
+    if (key === "h" || key === "H") {
+      showDormant = !showDormant;
+      redraw();
+      return;
+    }
     if (key >= "1" && key <= "9") {
       const idx = Number(key) - 1;
       if (report && idx < report.providers.length) {
@@ -403,9 +500,18 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
       }
       return;
     }
-    if (key === "\t") {
+    // j / down / tab → next
+    if (key === "j" || key === "\t" || key === `${ESC}[B`) {
       if (report?.providers.length) {
         focus = (focus + 1) % report.providers.length;
+        redraw();
+      }
+      return;
+    }
+    // k / up → prev
+    if (key === "k" || key === `${ESC}[A`) {
+      if (report?.providers.length) {
+        focus = (focus - 1 + report.providers.length) % report.providers.length;
         redraw();
       }
       return;
@@ -414,15 +520,13 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
       const p: ProviderSnapshot | undefined = report?.providers[focus];
       const payload = p?.referral?.link || p?.referral?.label || p?.referral?.code;
       if (!payload) {
-        showToast(
-          `${p?.displayName || "provider"}: no referral — set ~/.config/llmquota/referrals.json`,
-        );
+        showToast("no referral on this fighter");
         return;
       }
       if (copyToClipboard(payload)) {
-        showToast(`copied ${p!.displayName} referral → clipboard`);
+        showToast(`copied ${p!.displayName} ref`);
       } else {
-        showToast(`clipboard failed — ${payload}`);
+        showToast(payload.slice(0, 60));
       }
     }
   };

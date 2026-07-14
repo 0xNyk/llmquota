@@ -65,7 +65,7 @@ Usage:
   llmquota --style emoji
   llmquota --refresh    bypass usage caches
 
-TUI keys:  1-9 focus  ·  tab next  ·  c copy ref  ·  r refresh  ·  q quit
+TUI keys:  1-9 / tab / j k  ·  c copy ref  ·  h sidelined  ·  r refresh  ·  q quit
 
 Multi-profile (Claude via silo):
   Discovers ~/.claude plus ~/.silo/profiles/* (https://github.com/0xNyk/silo).

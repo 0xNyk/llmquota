@@ -14,7 +14,7 @@ pnpm build            # once (or after pulling src changes)
 
 Requires **Node 22+** (uses built-in `node:sqlite` for Cursor).
 
-TUI keys: **`r`** refresh · **`q`** quit (auto-refresh ~45s).
+TUI keys: **`1–9` / `tab` / `j` `k`** focus · **`c`** copy ref · **`h`** sidelined · **`r`** refresh · **`q`** quit (auto-refresh ~45s).
 
 If `pnpm install` asks about build scripts, allow **esbuild** (needed by the optional `tsx` dev runner). The project already has `pnpm-workspace.yaml` → `allowBuilds.esbuild: true`.
 
