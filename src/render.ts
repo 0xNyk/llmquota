@@ -58,6 +58,8 @@ function statusTag(p: ProviderSnapshot): string {
   if (p.auth === "expired") return "auth expired";
   if (p.auth === "error") return "auth error";
   if (p.error && !p.windows.length) return "usage unavailable";
+  if (p.requestAvailability === "blocked" && p.score == null) return "KO";
+  if (p.requestAvailability === "unknown" && p.score == null) return "usage unknown";
   // Prefer aggregate score so a maxed sub-window with top-up left isn't false KO
   if (p.score != null) {
     if (p.score >= 100) return "KO";
@@ -66,7 +68,7 @@ function statusTag(p: ProviderSnapshot): string {
   }
   if (p.windows.some((w) => meterAffectsAvailability(w) && (w.usedPercent ?? 0) >= 100)) return "KO";
   if (p.windows.some((w) => meterAffectsAvailability(w) && (w.usedPercent ?? 0) >= 90)) return "limping";
-  return "ready";
+  return p.requestAvailability === "available" ? "ready" : "usage unknown";
 }
 
 function formatMeterReset(m: Meter): string {

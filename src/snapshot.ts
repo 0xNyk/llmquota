@@ -36,6 +36,7 @@ export function baseSnapshot(input: BaseSnapshotInput): ProviderSnapshot {
     source: input.source ?? "none",
     error: null,
     hint: input.hint ?? null,
+    requestAvailability: "unknown",
     referral: null,
     score: null,
     profileId: input.profileId ?? "default",

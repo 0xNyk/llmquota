@@ -5,12 +5,14 @@ import { DatabaseSync } from "node:sqlite";
 import { collectClaudeUsageWindows, isClaudeUsagePayload } from "./providers/claude.js";
 import {
   codexBlockedLimits,
+  codexRequestAvailability,
   codexUsageScore,
   collectCodexUsageWindows,
   isCodexUsagePayload,
 } from "./providers/codex.js";
 import {
   collectCursorUsageWindows,
+  cursorUsageHint,
   cursorInstalled,
   cursorStateDbCandidates,
   isCursorUsagePayload,
@@ -22,6 +24,7 @@ import {
   hermesAvailabilityScore,
   hermesEntitlementHint,
   hermesGlobalAuthPath,
+  hermesProviderAccessToken,
   hermesPaidAccessAllowed,
   hermesSubscriptionLabels,
   hermesUsageScore,
@@ -36,9 +39,11 @@ import { availabilityScore, fetchJson } from "./util.js";
 import { meterSlot } from "./tui-card-body.js";
 import {
   parseHermesModelConfig,
+  parseCursorModelConfig,
   parseJsonModelConfig,
   parseTomlModelConfig,
   readCodexActiveSelection,
+  readCursorActiveSelection,
   readGrokActiveSelection,
   readHermesActiveSelection,
 } from "./active-selection.js";
@@ -69,6 +74,12 @@ providers: {}
   const claude = parseJsonModelConfig('{"model":"sonnet"}', "Anthropic");
   assert(claude.provider === "Anthropic" && claude.model === "sonnet",
     "Claude configured model parses from settings JSON");
+  const cursor = parseCursorModelConfig(JSON.stringify({
+    model: { modelId: "fallback-model" },
+    selectedModel: { modelId: "grok-4.5" },
+  }));
+  assert(cursor.provider === "Cursor" && cursor.model === "grok-4.5",
+    "Cursor selected model parses from CLI config");
   const codex = parseTomlModelConfig('model = "gpt-5.5"\nmodel_provider = "openai"\n');
   assert(codex.provider === "openai" && codex.model === "gpt-5.5",
     "Codex configured provider and model parse from top-level TOML");
@@ -96,6 +107,11 @@ providers: {}
     const selectedCodex = readCodexActiveSelection(dir, "test-thread");
     assert(selectedCodex.model === "active-codex",
       "Codex current-thread model overrides configured default");
+
+    writeFileSync(join(dir, "cli-config.json"), '{"model":{"modelId":"cursor-live"}}');
+    const selectedCursor = readCursorActiveSelection(dir);
+    assert(selectedCursor.model === "cursor-live",
+      "Cursor configured model reads from its CLI config file");
 
     writeFileSync(join(dir, "active_sessions.json"), '[{"model_id":"grok-live","provider":"xai"}]');
     const selectedGrok = readGrokActiveSelection(dir);
@@ -175,22 +191,65 @@ providers: {}
     },
     additional_rate_limits: [{
       limit_name: "model pool",
-      rate_limit: { allowed: true, limit_reached: true },
+      rate_limit: {
+        allowed: true,
+        limit_reached: true,
+        primary_window: { used_percent: 100 },
+      },
     }],
     credits: { has_credits: false },
   };
-  const windows = collectCodexUsageWindows(denied);
+  const windows = collectCodexUsageWindows(denied, Date.now(), "model-pool");
   assert(windows.find((w) => w.name === "primary")?.usedPercent === 17,
     "Codex denial does not rewrite measured utilization to a fake 100%");
   assert(codexBlockedLimits(denied).join(",") === "primary,model pool",
     "Codex explicit primary and model-pool blocking states detected");
-  assert(codexUsageScore(denied, windows) === 100,
-    "Codex explicit denial drives provider availability independently of measured percent");
+  assert(codexUsageScore(denied, windows, "model pool") === 100,
+    "Codex active-model denial drives provider availability independently of measured percent");
+  const unrelatedWindows = collectCodexUsageWindows(denied, Date.now(), "gpt-5.6-sol");
+  assert(unrelatedWindows.find((w) => w.name === "model pool")?.affectsAvailability === false,
+    "Codex unrelated model pool remains visible without blocking the active model");
+  assert(codexUsageScore(denied, unrelatedWindows, "gpt-5.6-sol") === 100,
+    "Codex primary denial still blocks every model");
   const credits = windows.find((w) => w.name === "credits");
   assert(credits?.detail === "none available",
     "Codex explicit no-credit state retained without a supplied balance");
   assert(credits?.affectsAvailability === false,
     "Codex credit availability remains a nonblocking billing fact");
+}
+
+{
+  const modelOnlyDenied = {
+    rate_limit: {
+      allowed: true,
+      limit_reached: false,
+      primary_window: { used_percent: 17, limit_window_seconds: 604800 },
+    },
+    code_review_rate_limit: {
+      allowed: false,
+      primary_window: { used_percent: 100 },
+    },
+    additional_rate_limits: [{
+      limit_name: "GPT-5.3-Codex-Spark",
+      rate_limit: {
+        allowed: false,
+        limit_reached: true,
+        primary_window: { used_percent: 100 },
+      },
+    }],
+  };
+  const current = collectCodexUsageWindows(modelOnlyDenied, Date.now(), "gpt-5.6-sol");
+  assert(current.find((w) => w.name === "code_review")?.affectsAvailability === false,
+    "Codex code-review quota remains visible without blocking normal inference");
+  assert(codexUsageScore(modelOnlyDenied, current, "gpt-5.6-sol") === 17,
+    "Codex unrelated exhausted model and code-review pools do not block the active model");
+  assert(codexRequestAvailability(modelOnlyDenied, "gpt-5.6-sol", 17) === "available",
+    "Codex explicit primary allowance proves the active model is available");
+  const spark = collectCodexUsageWindows(modelOnlyDenied, Date.now(), "gpt-5.3-codex-spark");
+  assert(codexUsageScore(modelOnlyDenied, spark, "gpt-5.3-codex-spark") === 100,
+    "Codex matching exhausted model pool blocks the active model");
+  assert(codexRequestAvailability(modelOnlyDenied, "gpt-5.3-codex-spark", 100) === "blocked",
+    "Codex explicit matching model denial proves the active model is blocked");
 }
 
 {
@@ -260,6 +319,18 @@ providers: {}
     "Hermes global provider fallback retains source state");
   assert(fallback.auth.credential_pool?.nous?.[0]?.id === "global",
     "Hermes global pool fallback retains source entries");
+  assert(
+    hermesProviderAccessToken({
+      providers: { "openai-codex": { tokens: { access_token: "nested-token" } } },
+    }, "OpenAI Codex") === "nested-token",
+    "Hermes active provider token resolves nested OAuth state across label variants",
+  );
+  assert(
+    hermesProviderAccessToken({
+      credential_pool: { "openai-codex": [{ access_token: "pool-token" }] },
+    }, "openai-codex") === "pool-token",
+    "Hermes active provider token falls back to its credential pool",
+  );
   const inheritedSlots = discoverNousSlotsWithFallback(
     { providers: {}, credential_pool: { nous: [] } },
     globalAuth,
@@ -437,17 +508,36 @@ providers: {}
       apiPercentUsed: 100,
       totalPercentUsed: 72.09733333333334,
     },
+    autoBucketModels: ["grok-4.5", "composer-2"],
     spendLimitUsage: {
       totalSpend: 2451,
       individualLimit: 2000,
       individualUsed: 2451,
       limitType: "user",
     },
-  });
+  }, "grok-4.5");
   const plan = windows.find((w) => w.name === "plan_total");
   assert(plan?.usedPercent === 72.09733333333334, "Cursor total pool percent preserved");
   assert(/\$1,081\.46 used.*\$400\.00 plan.*\$681\.46 bonus/.test(plan?.detail || ""),
     "Cursor plan, bonus, and consumed value stay distinct");
+  assert(plan?.affectsAvailability === false,
+    "Cursor aggregate spend remains visible without masquerading as the active pool");
+  assert(windows.find((w) => w.name === "auto")?.affectsAvailability === true,
+    "Cursor active model binds to its authoritative Auto bucket");
+  assert(windows.find((w) => w.name === "api")?.affectsAvailability === false,
+    "Cursor inactive named/API pool does not exhaust an Auto-bucket model");
+  assert(availabilityScore(windows) === 56.837,
+    "Cursor score follows the active model pool instead of the exhausted unrelated pool");
+  const liveMessages = {
+    autoBucketModels: ["grok-4.5"],
+    displayMessage: "You've hit your usage limit",
+    autoModelSelectedDisplayMessage: "You've used 57% of your included total usage",
+    namedModelSelectedDisplayMessage: "You've used 100% of your included API usage",
+  };
+  assert(cursorUsageHint(liveMessages, "grok-4.5")?.includes("57%") === true,
+    "Cursor hint follows the active Auto pool instead of a contradictory generic warning");
+  assert(cursorUsageHint(liveMessages, "claude-fable-5")?.includes("100%") === true,
+    "Cursor hint follows the named/API pool for a model outside Auto buckets");
   const billed = windows.find((w) => w.name === "on_demand");
   assert(Math.round(billed?.usedPercent || 0) === 123, "Cursor on-demand cap utilization derived");
   assert(/\$24\.51.*\$20\.00 user cap/.test(billed?.detail || ""),

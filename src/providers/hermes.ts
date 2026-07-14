@@ -4,6 +4,7 @@ import type { Meter, ProviderSnapshot } from "../types.js";
 import { baseSnapshot, isExpiredAt } from "../snapshot.js";
 import {
   availableInFromIso,
+  decodeJwtPayload,
   fetchJson,
   hasAnyOwn,
   headroomScore,
@@ -12,9 +13,17 @@ import {
   nonEmpty,
   readCache,
   writeCache,
+  titleCase,
 } from "../util.js";
 import { detectHermes } from "./detect.js";
 import { readHermesActiveSelection } from "../active-selection.js";
+import {
+  codexUsageHint,
+  codexUsageScore,
+  codexRequestAvailability,
+  collectCodexUsageWindows,
+  isCodexUsagePayload,
+} from "./codex.js";
 
 const DEFAULT_PORTAL = "https://portal.nousresearch.com";
 const DEFAULT_CLIENT_ID = "hermes-cli";
@@ -51,6 +60,54 @@ interface HermesAuthFile {
   active_provider?: string;
   updated_at?: string;
   [k: string]: unknown;
+}
+
+function normalizedProvider(value: string | null | undefined): string {
+  return (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function isNousProvider(value: string | null | undefined): boolean {
+  const provider = normalizedProvider(value);
+  return !provider || provider === "nous" || provider === "nousresearch";
+}
+
+function isOpenAiCodexProvider(value: string | null | undefined): boolean {
+  const provider = normalizedProvider(value);
+  return provider === "openaicodex" || provider === "codex" || provider === "chatgpt";
+}
+
+function accessTokenFromState(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const state = value as Record<string, unknown>;
+  if (typeof state.access_token === "string" && state.access_token.trim()) {
+    return state.access_token;
+  }
+  const tokens = state.tokens;
+  if (tokens && typeof tokens === "object") {
+    const access = (tokens as Record<string, unknown>).access_token;
+    if (typeof access === "string" && access.trim()) return access;
+  }
+  return null;
+}
+
+export function hermesProviderAccessToken(
+  auth: HermesAuthFile | null,
+  provider: string,
+): string | null {
+  if (!auth) return null;
+  const providerKey = Object.keys(auth.providers || {}).find(
+    (key) => normalizedProvider(key) === normalizedProvider(provider),
+  ) || provider;
+  const poolKey = Object.keys(auth.credential_pool || {}).find(
+    (key) => normalizedProvider(key) === normalizedProvider(provider),
+  ) || provider;
+  const direct = accessTokenFromState(auth.providers?.[providerKey]);
+  if (direct) return direct;
+  for (const entry of auth.credential_pool?.[poolKey] || []) {
+    const token = accessTokenFromState(entry);
+    if (token) return token;
+  }
+  return null;
 }
 
 interface NousSubscription {
@@ -812,8 +869,116 @@ function finalizeAccount(
   base.windows = buildHermesMeters(payload);
   const total = access?.total_usable_credits ?? payload.purchased_credits_remaining ?? null;
   base.score = hermesAvailabilityScore(payload, base.windows, total);
+  const allowed = hermesPaidAccessAllowed(payload);
+  base.requestAvailability = allowed === false || base.score === 100
+    ? "blocked"
+    : allowed === true || (typeof total === "number" && Number.isFinite(total) && total > 0) || base.score != null
+      ? "available"
+      : "unknown";
   base.hint = hermesEntitlementHint(payload);
 
+  return base;
+}
+
+function configuredProviderToken(provider: string): string | null {
+  const paths = [authPath(), hermesGlobalAuthPath()].filter(
+    (path): path is string => Boolean(path),
+  );
+  for (const path of paths) {
+    const token = hermesProviderAccessToken(readAuthFileAt(path), provider);
+    if (token) return token;
+  }
+  return null;
+}
+
+function jwtExpiryMs(token: string): number | null {
+  const exp = decodeJwtPayload(token)?.exp;
+  return typeof exp === "number" && Number.isFinite(exp) && exp >= 0 ? exp * 1000 : null;
+}
+
+function chatGptAccountId(token: string): string | null {
+  const claims = decodeJwtPayload(token);
+  const auth = claims?.["https://api.openai.com/auth"];
+  if (auth && typeof auth === "object") {
+    const id = (auth as Record<string, unknown>).chatgpt_account_id;
+    if (typeof id === "string" && id.trim()) return id;
+  }
+  const id = claims?.account_id;
+  return typeof id === "string" && id.trim() ? id : null;
+}
+
+async function collectHermesOpenAiCodex(
+  bin: ReturnType<typeof detectHermes>,
+): Promise<ProviderSnapshot> {
+  const base = emptySnapshot(bin, null);
+  base.source = "hermes_auth";
+  if (!bin.installed) {
+    base.hint = "Install Hermes Agent, then run `hermes model`.";
+    return base;
+  }
+
+  const provider = readHermesActiveSelection(hermesHome()).provider || "openai-codex";
+  const token = configuredProviderToken(provider);
+  if (!token) {
+    base.hint = "Run `hermes model` to authenticate the active OpenAI Codex provider.";
+    return base;
+  }
+  const expiresAt = jwtExpiryMs(token);
+  if (expiresAt != null && expiresAt <= Date.now() + EXPIRY_SKEW_MS) {
+    base.auth = "expired";
+    base.error = "Hermes OpenAI Codex token expired";
+    base.hint = "Run `hermes model` to re-authenticate OpenAI Codex.";
+    return base;
+  }
+
+  base.auth = "ok";
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+  const accountId = chatGptAccountId(token);
+  if (accountId) headers["ChatGPT-Account-ID"] = accountId;
+  const res = await fetchJson("https://chatgpt.com/backend-api/wham/usage", { headers });
+  base.source = "hermes_openai_codex_wham";
+  if (!res.ok || !res.json || typeof res.json !== "object") {
+    if (res.status === 401) base.auth = "expired";
+    else if (res.status !== 0) base.auth = "error";
+    base.error = res.status === 0
+      ? "Hermes OpenAI Codex usage unavailable (network error)"
+      : `Hermes OpenAI Codex usage failed (HTTP ${res.status})`;
+    base.hint = res.status === 0
+      ? "Could not reach ChatGPT usage; retry when online."
+      : "Run `hermes model` to re-authenticate OpenAI Codex.";
+    return base;
+  }
+  if (!isCodexUsagePayload(res.json)) {
+    base.error = "Hermes OpenAI Codex response missing recognized fields";
+    base.hint = "ChatGPT returned an unfamiliar usage response; retry or update llmquota.";
+    return base;
+  }
+
+  const data = res.json;
+  base.plan = data.plan_type ? titleCase(data.plan_type) : null;
+  base.subscription = base.plan ? `OpenAI Codex ${base.plan}` : "OpenAI Codex";
+  base.account = data.email || null;
+  base.windows = collectCodexUsageWindows(data, Date.now(), base.activeModel);
+  base.score = codexUsageScore(data, base.windows, base.activeModel);
+  base.requestAvailability = codexRequestAvailability(data, base.activeModel, base.score);
+  base.hint = codexUsageHint(data, base.windows);
+  return base;
+}
+
+function collectHermesUnsupportedProvider(
+  bin: ReturnType<typeof detectHermes>,
+  provider: string,
+): ProviderSnapshot {
+  const base = emptySnapshot(bin, null);
+  const token = configuredProviderToken(provider);
+  if (token) base.auth = "ok";
+  base.source = "hermes_auth";
+  base.hint = bin.installed
+    ? `Quota API unavailable for active Hermes provider ${provider}; no usage is inferred.`
+    : "Install Hermes Agent, then configure its model provider.";
   return base;
 }
 
@@ -821,6 +986,13 @@ export async function collectHermesAll(
   opts: { refresh?: boolean } = {},
 ): Promise<ProviderSnapshot[]> {
   const bin = detectHermes();
+  const selection = readHermesActiveSelection(hermesHome());
+  if (!isNousProvider(selection.provider)) {
+    if (isOpenAiCodexProvider(selection.provider)) {
+      return [await collectHermesOpenAiCodex(bin)];
+    }
+    return [collectHermesUnsupportedProvider(bin, selection.provider!)];
+  }
   const slots = discoverConfiguredNousSlots();
   if (!slots.length) {
     const snap = emptySnapshot(bin, null);

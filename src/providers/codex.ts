@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import type { Meter, ProviderSnapshot } from "../types.js";
+import type { Meter, ProviderSnapshot, RequestAvailability } from "../types.js";
 import {
   availableInFromEpoch,
   availabilityScore,
@@ -37,7 +37,7 @@ interface CodexRateLimit {
   secondary_window?: CodexWindow | null;
 }
 
-interface CodexWham {
+export interface CodexWham {
   email?: string;
   plan_type?: string;
   rate_limit?: CodexRateLimit;
@@ -78,6 +78,7 @@ function meterFromWindow(
   label: string,
   w: CodexWindow | undefined | null,
   nowMs: number,
+  affectsAvailability = true,
 ): Meter | null {
   if (!w || typeof w.used_percent !== "number" || !Number.isFinite(w.used_percent) || w.used_percent < 0) {
     return null;
@@ -96,7 +97,14 @@ function meterFromWindow(
     resetsAt,
     availableIn: availableInFromEpoch(resetEpoch),
     windowSeconds: w.limit_window_seconds ?? null,
+    affectsAvailability,
   };
+}
+
+function sameModel(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return normalize(a) === normalize(b);
 }
 
 export async function collectCodex(): Promise<ProviderSnapshot> {
@@ -177,10 +185,16 @@ export async function collectCodex(): Promise<ProviderSnapshot> {
   base.account = data.email || null;
   base.source = "wham_usage";
 
-  const windows = collectCodexUsageWindows(data);
+  const windows = collectCodexUsageWindows(data, Date.now(), selection.model);
   base.windows = windows;
+  base.score = codexUsageScore(data, windows, selection.model);
+  base.requestAvailability = codexRequestAvailability(data, selection.model, base.score);
+  base.hint = codexUsageHint(data, windows);
+  return base;
+}
+
+export function codexUsageHint(data: CodexWham, windows: Meter[]): string | null {
   const blocked = codexBlockedLimits(data);
-  base.score = codexUsageScore(data, windows);
   const notices: string[] = [];
   if (blocked.includes("primary")) {
     const primary = windows.find((w) => w.name === "primary");
@@ -191,11 +205,14 @@ export async function collectCodex(): Promise<ProviderSnapshot> {
   if (data.rate_limit_reached_type) notices.push(`Limit type: ${data.rate_limit_reached_type}.`);
   if (data.credits?.overage_limit_reached) notices.push("Credit overage limit reached.");
   if (data.spend_control?.reached) notices.push("Spend control reached.");
-  base.hint = notices.join(" ") || null;
-  return base;
+  return notices.join(" ") || null;
 }
 
-export function collectCodexUsageWindows(data: CodexWham, nowMs = Date.now()): Meter[] {
+export function collectCodexUsageWindows(
+  data: CodexWham,
+  nowMs = Date.now(),
+  activeModel: string | null = null,
+): Meter[] {
   const windows: Meter[] = [];
   const primary = meterFromWindow(
     "primary",
@@ -217,6 +234,7 @@ export function collectCodexUsageWindows(data: CodexWham, nowMs = Date.now()): M
     "code review",
     data.code_review_rate_limit?.primary_window,
     nowMs,
+    false,
   );
   if (review) windows.push(review);
   const reviewSecondary = meterFromWindow(
@@ -224,16 +242,19 @@ export function collectCodexUsageWindows(data: CodexWham, nowMs = Date.now()): M
     "code review secondary",
     data.code_review_rate_limit?.secondary_window,
     nowMs,
+    false,
   );
   if (reviewSecondary) windows.push(reviewSecondary);
 
   for (const extra of data.additional_rate_limits || []) {
     const name = extra.limit_name || "extra";
+    const isActiveModelPool = sameModel(name, activeModel);
     const m = meterFromWindow(
       name,
       name,
       extra.rate_limit?.primary_window,
       nowMs,
+      isActiveModelPool,
     );
     if (m) windows.push(m);
     const secondaryExtra = meterFromWindow(
@@ -241,6 +262,7 @@ export function collectCodexUsageWindows(data: CodexWham, nowMs = Date.now()): M
       `${name} secondary`,
       extra.rate_limit?.secondary_window,
       nowMs,
+      isActiveModelPool,
     );
     if (secondaryExtra) windows.push(secondaryExtra);
   }
@@ -300,8 +322,41 @@ export function codexBlockedLimits(data: CodexWham): string[] {
   return blocked;
 }
 
-export function codexUsageScore(data: CodexWham, windows: Meter[]): number | null {
-  return codexBlockedLimits(data).length ? 100 : availabilityScore(windows);
+export function codexUsageScore(
+  data: CodexWham,
+  windows: Meter[],
+  activeModel: string | null = null,
+): number | null {
+  const primaryBlocked = data.rate_limit?.allowed === false || data.rate_limit?.limit_reached === true;
+  const activeModelBlocked = (data.additional_rate_limits || []).some(
+    (extra) =>
+      sameModel(extra.limit_name, activeModel) &&
+      (extra.rate_limit?.allowed === false || extra.rate_limit?.limit_reached === true),
+  );
+  return primaryBlocked || activeModelBlocked ? 100 : availabilityScore(windows);
+}
+
+export function codexRequestAvailability(
+  data: CodexWham,
+  activeModel: string | null,
+  score: number | null,
+): RequestAvailability {
+  const primaryBlocked = data.rate_limit?.allowed === false || data.rate_limit?.limit_reached === true;
+  const activeModelLimit = (data.additional_rate_limits || []).find(
+    (extra) => sameModel(extra.limit_name, activeModel),
+  )?.rate_limit;
+  if (
+    primaryBlocked ||
+    activeModelLimit?.allowed === false ||
+    activeModelLimit?.limit_reached === true ||
+    score != null && score >= 100
+  ) return "blocked";
+  if (
+    data.rate_limit?.allowed === true ||
+    activeModelLimit?.allowed === true ||
+    score != null
+  ) return "available";
+  return "unknown";
 }
 
 function chatgptPlanFromIdToken(idToken: string | undefined): string | null {

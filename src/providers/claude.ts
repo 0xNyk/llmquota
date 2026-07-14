@@ -510,7 +510,9 @@ export async function collectClaudeProfile(
   base.plan = planLabel(creds);
   base.subscription = subscriptionLabel(creds);
 
-  if (accessExpired(creds)) {
+  // The usage endpoint is authoritative. Claude credential expiry metadata can lag
+  // token validity, while an old refresh token may already be revoked.
+  if (!nonEmpty(creds.accessToken)) {
     if (nonEmpty(creds.refreshToken)) {
       const refreshed = await refreshClaudeAccess(creds, target);
       if (refreshed.ok) {
@@ -543,6 +545,9 @@ export async function collectClaudeProfile(
       base.windows = collectClaudeUsageWindows(cached);
       base.source = "oauth_usage(cache)";
       base.score = availabilityScore(base.windows);
+      base.requestAvailability = base.score == null
+        ? "unknown"
+        : base.score >= 100 ? "blocked" : "available";
       return base;
     }
   }
@@ -570,6 +575,9 @@ export async function collectClaudeProfile(
         base.windows = collectClaudeUsageWindows(payload);
         base.source = "oauth_usage(refreshed)";
         base.score = availabilityScore(base.windows);
+        base.requestAvailability = base.score == null
+          ? "unknown"
+          : base.score >= 100 ? "blocked" : "available";
         return base;
       }
     } else {
@@ -614,6 +622,9 @@ export async function collectClaudeProfile(
   base.windows = collectClaudeUsageWindows(payload);
   base.source = "oauth_usage";
   base.score = availabilityScore(base.windows);
+  base.requestAvailability = base.score == null
+    ? "unknown"
+    : base.score >= 100 ? "blocked" : "available";
   return base;
 }
 
