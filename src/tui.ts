@@ -204,6 +204,18 @@ function boxCard(
   });
 }
 
+function refLine(p: ProviderSnapshot, contentWidth: number): string | null {
+  const ref = p.referral;
+  if (!ref?.label && !ref?.code) return null;
+  const code = ref.code?.trim();
+  if (code) {
+    return `${CYAN}ref${RESET}  ${BOLD}${code}${RESET}  ${DIM}c copy${RESET}`;
+  }
+  // Link-only (e.g. Cursor dashboard) — keep short
+  const link = (ref.link || ref.label || "").replace(/^https?:\/\//, "");
+  return `${CYAN}ref${RESET}  ${DIM}${link.slice(0, Math.max(12, contentWidth - 10))}${RESET}`;
+}
+
 function fighterCard(
   p: ProviderSnapshot,
   inner: number,
@@ -235,16 +247,21 @@ function fighterCard(
     `${st.color}${BOLD}${st.short}${RESET} ${st.color}${st.label}${RESET}  ${DIM}${plan.slice(0, Math.max(10, contentW - 12))}${RESET}`,
   );
 
+  const ref = refLine(p, contentW);
+  if (ref) lines.push(ref);
+
   if (p.auth === "ok" && p.windows.length) {
-    const meterBudget = Math.max(1, bodyH - 3); // leave room for spark + footer bits
+    const meterBudget = Math.max(1, bodyH - lines.length - 2);
     const show = p.windows.slice(0, Math.min(4, meterBudget));
     for (const m of show) lines.push(meterRow(m, contentW));
 
-    const primary = show[0]!;
-    if (bodyH >= lines.length + 2) {
-      lines.push(`${DIM}trend${RESET} ${sparkline(p.displayName + primary.label, primary.usedPercent, Math.max(12, contentW - 7))}`);
+    const primary = show[0];
+    if (primary && bodyH >= lines.length + 2) {
+      lines.push(
+        `${DIM}trend${RESET} ${sparkline(p.displayName + primary.label, primary.usedPercent, Math.max(12, contentW - 7))}`,
+      );
     }
-    if (bodyH >= lines.length + 2 && primary.detail) {
+    if (primary?.detail && bodyH >= lines.length + 2) {
       lines.push(`${DIM}${primary.detail.slice(0, contentW)}${RESET}`);
     }
     if (focused && p.active && bodyH >= lines.length + 1) {
@@ -256,8 +273,7 @@ function fighterCard(
   } else if (p.auth !== "ok") {
     const hint = (p.hint || p.error || "sign in required").replace(/\s+/g, " ");
     lines.push(`${DIM}${hint.slice(0, contentW)}${RESET}`);
-    if (bodyH >= 4) {
-      lines.push("");
+    if (bodyH >= lines.length + 2) {
       lines.push(`${FG_MUTE}${sparkline(p.displayName, null, Math.max(12, contentW - 2))}${RESET}`);
     }
   } else {
@@ -270,8 +286,11 @@ function fighterCard(
 function dormantChip(p: ProviderSnapshot, width: number, focused: boolean, tick: number): string {
   const st = statusInfo(p, tick);
   const mark = focused ? `${CYAN}▸${RESET}` : `${DIM}·${RESET}`;
+  const refBit = p.referral?.code
+    ? `  ${CYAN}ref ${p.referral.code}${RESET}`
+    : "";
   return padPlain(
-    `${mark} ${p.displayName}  ${st.color}${st.label}${RESET}  ${DIM}${(p.hint || "").slice(0, 36)}${RESET}`,
+    `${mark} ${p.displayName}  ${st.color}${st.label}${RESET}${refBit}  ${DIM}${(p.hint || "").slice(0, 28)}${RESET}`,
     width,
   );
 }
@@ -360,9 +379,20 @@ function focusPanel(p: ProviderSnapshot | undefined, cols: number, lines: number
     const bits: string[] = [];
     if (p.account) bits.push(p.account);
     if (p.score != null) bits.push(`${Math.round(p.score)}% used`);
-    if (p.referral?.code) bits.push(`ref ${p.referral.code}  ·  c copy`);
-    else if (p.referral?.label) bits.push("c · copy ref");
-    out.push(`  ${DIM}${padPlain(bits.join("  ·  ") || "—", cols - 4)}${RESET}`);
+
+    const ref = p.referral;
+    if (ref?.code) {
+      bits.push(`${CYAN}ref ${RESET}${BOLD}${ref.code}${RESET}`);
+      if (ref.link) bits.push(`${DIM}${ref.link.replace(/^https?:\/\//, "")}${RESET}`);
+      bits.push(`${DIM}press c to copy${RESET}`);
+    } else if (ref?.link || ref?.label) {
+      bits.push(
+        `${CYAN}ref${RESET} ${DIM}${(ref.link || ref.label || "").replace(/^https?:\/\//, "")}${RESET}`,
+      );
+      bits.push(`${DIM}press c to copy${RESET}`);
+    }
+
+    out.push(`  ${padPlain(bits.join(`${DIM}  ·  ${RESET}`) || "—", cols - 4)}`);
   }
   if (lines >= 3 && p.hint) {
     out.push(`  ${DIM}${padPlain(p.hint.replace(/\s+/g, " "), cols - 4)}${RESET}`);
