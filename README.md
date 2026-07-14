@@ -5,13 +5,16 @@ Fun terminal **roster** for Claude Code · Codex · Cursor · Grok rate limits �
 ```bash
 pnpm install
 pnpm build            # once (or after pulling src changes)
-./llmquota              # roster
+./llmquota              # live TUI arena (default)
+./llmquota --once       # classic one-shot text
 ./llmquota who          # one-liner pick
 ./llmquota doctor       # PATH + auth
 ./llmquota --json       # scripts / statuslines
 ```
 
 Requires **Node 22+** (uses built-in `node:sqlite` for Cursor).
+
+TUI keys: **`r`** refresh · **`q`** quit (auto-refresh ~45s).
 
 If `pnpm install` asks about build scripts, allow **esbuild** (needed by the optional `tsx` dev runner). The project already has `pnpm-workspace.yaml` → `allowBuilds.esbuild: true`.
 

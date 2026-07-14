@@ -30,7 +30,8 @@
     "start": "node dist/index.js",
     "llmquota": "tsx src/index.ts",
     "who": "tsx src/index.ts who",
-    "doctor": "tsx src/index.ts doctor"
+    "doctor": "tsx src/index.ts doctor",
+    "tui": "tsx src/index.ts tui"
   },
   "engines": {
     "node": ">=22"
