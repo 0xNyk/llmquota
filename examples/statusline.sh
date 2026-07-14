@@ -4,7 +4,7 @@
 #   "statusLine": { "type": "command", "command": "/path/to/llmquota/examples/statusline.sh" }
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${LLLMQUOTA_BIN:-$ROOT/llmquota}"
+BIN="${LLMQUOTA_BIN:-$ROOT/llmquota}"
 if [[ ! -x "$BIN" ]]; then
   BIN="$(command -v llmquota || true)"
 fi
