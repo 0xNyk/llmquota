@@ -2,6 +2,12 @@ import { collectAll } from "./collect.js";
 import { copyToClipboard } from "./clipboard.js";
 import type { Meter, ProviderSnapshot, RosterReport } from "./types.js";
 
+/**
+ * Arena TUI — widget-dashboard layout inspired by btop / token-burn,
+ * with aiquota-style pace markers and Ink-style sparklines.
+ * Vertical budget fills the terminal; cards expand to claim free rows.
+ */
+
 const ESC = "\x1b";
 const RESET = `${ESC}[0m`;
 const BOLD = `${ESC}[1m`;
@@ -13,7 +19,6 @@ const BLUE = `${ESC}[34m`;
 const CYAN = `${ESC}[36m`;
 const WHITE = `${ESC}[37m`;
 
-/** Charcoal arena — textured, no purple. */
 const BG = `${ESC}[48;5;233m`;
 const BG_PANEL = `${ESC}[48;5;235m`;
 const BG_HERO = `${ESC}[48;5;236m`;
@@ -23,9 +28,12 @@ const FG_SOFT = `${ESC}[38;5;245m`;
 const FOOTER_BG = `${ESC}[48;5;235m`;
 
 const REFRESH_MS = 45_000;
-const CARD_MIN_INNER = 30;
+const TICK_MS = 900;
+const CARD_MIN_INNER = 28;
+const CARD_MIN_BODY = 5;
 const GAP = 2;
 const MARGIN = 1;
+const SPARK = "▁▂▃▄▅▆▇█";
 
 type Level = "blue" | "green" | "yellow" | "red" | "unknown";
 
@@ -66,34 +74,62 @@ function texturedPad(row: number, startCol: number, width: number): string {
 
 function padVisible(s: string, width: number, row: number, startCol: number): string {
   const len = vlen(s);
-  if (len > width) {
-    const plain = stripAnsi(s);
-    return plain.slice(0, Math.max(0, width - 1)) + "…";
-  }
+  if (len > width) return stripAnsi(s).slice(0, Math.max(0, width - 1)) + "…";
   if (len === width) return s;
   return s + texturedPad(row, startCol + len, width - len);
 }
 
 function paintLine(content: string, cols: number, row: number): string {
-  const body = padVisible(`${BG}${content}`, cols, row, 0);
-  return `${BG}${body}${RESET}`;
+  return `${BG}${padVisible(`${BG}${content}`, cols, row, 0)}${RESET}`;
 }
 
 function padPlain(s: string, width: number): string {
   const len = vlen(s);
-  if (len >= width) {
-    const plain = stripAnsi(s);
-    return plain.slice(0, Math.max(0, width - 1)) + "…";
-  }
+  if (len >= width) return stripAnsi(s).slice(0, Math.max(0, width - 1)) + "…";
   return s + " ".repeat(width - len);
 }
 
-function bar(used: number | null, width: number): string {
+/** aiquota-style bar with optional pace marker (│ = time elapsed in window). */
+function pacedBar(used: number | null, width: number, paceFrac: number | null): string {
   if (used == null) return `${FG_MUTE}${"┈".repeat(width)}${RESET}`;
   const pct = Math.max(0, Math.min(100, used));
   const filled = Math.round((pct / 100) * width);
-  const body = "█".repeat(filled) + "░".repeat(Math.max(0, width - filled));
+  const paceCol =
+    paceFrac != null && Number.isFinite(paceFrac)
+      ? Math.max(0, Math.min(width - 1, Math.round(paceFrac * (width - 1))))
+      : -1;
+
+  let body = "";
+  for (let i = 0; i < width; i++) {
+    if (i === paceCol) body += `${WHITE}│${RESET}${levelColor(level(used))}`;
+    else body += i < filled ? "█" : "░";
+  }
   return `${levelColor(level(used))}${body}${RESET}`;
+}
+
+function paceFraction(m: Meter): number | null {
+  if (m.windowSeconds == null || m.windowSeconds <= 0 || !m.resetsAt) return null;
+  const reset = Date.parse(m.resetsAt);
+  if (Number.isNaN(reset)) return null;
+  const remainingSec = Math.max(0, (reset - Date.now()) / 1000);
+  const elapsed = Math.max(0, m.windowSeconds - remainingSec);
+  return Math.min(1, elapsed / m.windowSeconds);
+}
+
+/** Deterministic sparkline (InkUI / ink-hud vibe) from usage + seed. */
+function sparkline(seed: string, used: number | null, width: number): string {
+  const w = Math.max(8, width);
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  const peak = used == null ? 0.45 : Math.max(0.08, Math.min(1, used / 100));
+  let out = "";
+  for (let i = 0; i < w; i++) {
+    h = (h * 1664525 + 1013904223) >>> 0;
+    const wave = 0.55 + 0.45 * Math.sin(i * 0.55 + (h % 100) / 40);
+    const v = Math.max(0, Math.min(1, peak * wave * (0.7 + (h % 50) / 100)));
+    out += SPARK[Math.min(SPARK.length - 1, Math.floor(v * (SPARK.length - 1)))]!;
+  }
+  return `${levelColor(level(used))}${out}${RESET}`;
 }
 
 interface StatusInfo {
@@ -103,15 +139,17 @@ interface StatusInfo {
   kind: "ready" | "warn" | "ko" | "auth" | "missing";
 }
 
-function statusInfo(p: ProviderSnapshot): StatusInfo {
+function statusInfo(p: ProviderSnapshot, tick: number): StatusInfo {
   if (!p.installed) return { label: "missing", short: "—", color: DIM, kind: "missing" };
   if (p.auth === "missing") return { label: "no login", short: "···", color: YELLOW, kind: "auth" };
   if (p.auth === "expired") return { label: "expired", short: "!", color: RED, kind: "auth" };
   if (p.auth === "error") return { label: "error", short: "!", color: RED, kind: "auth" };
+
+  const pulse = ["●", "◉", "○", "◉"][tick % 4]!;
   if (p.score != null) {
     if (p.score >= 100) return { label: "ko", short: "✕", color: RED, kind: "ko" };
     if (p.score >= 90) return { label: "limping", short: "!", color: YELLOW, kind: "warn" };
-    return { label: "ready", short: "●", color: GREEN, kind: "ready" };
+    return { label: "ready", short: pulse, color: GREEN, kind: "ready" };
   }
   if (p.windows.some((w) => (w.usedPercent ?? 0) >= 100)) {
     return { label: "ko", short: "✕", color: RED, kind: "ko" };
@@ -119,7 +157,7 @@ function statusInfo(p: ProviderSnapshot): StatusInfo {
   if (p.windows.some((w) => (w.usedPercent ?? 0) >= 90)) {
     return { label: "limping", short: "!", color: YELLOW, kind: "warn" };
   }
-  return { label: "ready", short: "●", color: GREEN, kind: "ready" };
+  return { label: "ready", short: pulse, color: GREEN, kind: "ready" };
 }
 
 function isDormant(p: ProviderSnapshot): boolean {
@@ -127,9 +165,9 @@ function isDormant(p: ProviderSnapshot): boolean {
 }
 
 function meterRow(m: Meter, contentWidth: number): string {
-  const labelW = Math.min(8, Math.max(5, Math.floor(contentWidth * 0.14)));
-  const rightW = 11;
-  const barW = Math.max(8, contentWidth - labelW - rightW - 2);
+  const labelW = Math.min(8, Math.max(5, Math.floor(contentWidth * 0.12)));
+  const rightW = 12;
+  const barW = Math.max(12, contentWidth - labelW - rightW - 2);
   const label = m.label.slice(0, labelW).padEnd(labelW);
 
   if (m.usedPercent == null) {
@@ -139,13 +177,14 @@ function meterRow(m: Meter, contentWidth: number): string {
 
   const pct = String(Math.round(m.usedPercent)).padStart(3);
   const reset = (m.availableIn || "").slice(0, 6).padStart(6);
-  return `${FG_SOFT}${label}${RESET} ${bar(m.usedPercent, barW)} ${levelColor(level(m.usedPercent))}${pct}%${RESET}${DIM}${reset ? ` ${reset}` : ""}${RESET}`;
+  return `${FG_SOFT}${label}${RESET} ${pacedBar(m.usedPercent, barW, paceFraction(m))} ${levelColor(level(m.usedPercent))}${pct}%${RESET}${DIM}${reset ? ` ${reset}` : ""}${RESET}`;
 }
 
 function boxCard(
   title: string,
   body: string[],
   inner: number,
+  bodyH: number,
   focused: boolean,
   accent: string,
 ): string[] {
@@ -154,15 +193,25 @@ function boxCard(
   const dash = Math.max(0, inner - vlen(titleText) - 1);
   const top = `╭${titleText} ${"─".repeat(dash)}╮`;
   const bottom = `╰${"─".repeat(inner)}╯`;
-  const mid = body.map((line) => `│ ${padPlain(line, inner - 2)} │`);
+
+  const padded = [...body];
+  while (padded.length < bodyH) padded.push("");
+  const mid = padded.slice(0, bodyH).map((line) => `│ ${padPlain(line, inner - 2)} │`);
+
   return [top, ...mid, bottom].map((line, i) => {
-    if (i === 0 || i === body.length + 1) return `${accent}${line}${RESET}`;
+    if (i === 0 || i === bodyH + 1) return `${accent}${line}${RESET}`;
     return `${BG_PANEL}${line}${RESET}`;
   });
 }
 
-function fighterCard(p: ProviderSnapshot, inner: number, focused: boolean): string[] {
-  const st = statusInfo(p);
+function fighterCard(
+  p: ProviderSnapshot,
+  inner: number,
+  bodyH: number,
+  focused: boolean,
+  tick: number,
+): string[] {
+  const st = statusInfo(p, tick);
   const accent = focused
     ? CYAN
     : st.kind === "ready"
@@ -173,38 +222,58 @@ function fighterCard(p: ProviderSnapshot, inner: number, focused: boolean): stri
           ? RED
           : FG_MUTE;
 
-  const title = p.displayName;
+  const contentW = inner - 2;
   const lines: string[] = [];
 
-  // Status + plan on one line
-  const plan = (p.subscription || p.plan || "—").replace(/^Claude\s+/i, "").replace(/^Nous\s+/i, "Nous ");
+  const plan = (p.subscription || p.plan || "—")
+    .replace(/^Claude\s+/i, "")
+    .replace(/^Codex\s+/i, "")
+    .replace(/^Cursor\s+/i, "")
+    .replace(/^Grok\s+·\s+/i, "")
+    .replace(/^Nous\s+/i, "Nous ");
   lines.push(
-    `${st.color}${BOLD}${st.short}${RESET} ${st.color}${st.label}${RESET}  ${DIM}${plan.slice(0, Math.max(8, inner - 14))}${RESET}`,
+    `${st.color}${BOLD}${st.short}${RESET} ${st.color}${st.label}${RESET}  ${DIM}${plan.slice(0, Math.max(10, contentW - 12))}${RESET}`,
   );
 
   if (p.auth === "ok" && p.windows.length) {
-    for (const m of p.windows.slice(0, 3)) {
-      lines.push(meterRow(m, inner - 2));
+    const meterBudget = Math.max(1, bodyH - 3); // leave room for spark + footer bits
+    const show = p.windows.slice(0, Math.min(4, meterBudget));
+    for (const m of show) lines.push(meterRow(m, contentW));
+
+    const primary = show[0]!;
+    if (bodyH >= lines.length + 2) {
+      lines.push(`${DIM}trend${RESET} ${sparkline(p.displayName + primary.label, primary.usedPercent, Math.max(12, contentW - 7))}`);
+    }
+    if (bodyH >= lines.length + 2 && primary.detail) {
+      lines.push(`${DIM}${primary.detail.slice(0, contentW)}${RESET}`);
+    }
+    if (focused && p.active && bodyH >= lines.length + 1) {
+      lines.push(`${CYAN}★ active profile${RESET}`);
+    }
+    if (focused && p.hint && bodyH >= lines.length + 1) {
+      lines.push(`${DIM}${p.hint.replace(/\s+/g, " ").slice(0, contentW)}${RESET}`);
     }
   } else if (p.auth !== "ok") {
     const hint = (p.hint || p.error || "sign in required").replace(/\s+/g, " ");
-    lines.push(`${DIM}${hint.slice(0, inner - 4)}${RESET}`);
+    lines.push(`${DIM}${hint.slice(0, contentW)}${RESET}`);
+    if (bodyH >= 4) {
+      lines.push("");
+      lines.push(`${FG_MUTE}${sparkline(p.displayName, null, Math.max(12, contentW - 2))}${RESET}`);
+    }
   } else {
     lines.push(`${DIM}no meters yet${RESET}`);
   }
 
-  if (focused && p.active) {
-    lines.push(`${CYAN}★ active profile${RESET}`);
-  }
-
-  return boxCard(title, lines, inner, focused, accent);
+  return boxCard(p.displayName, lines, inner, bodyH, focused, accent);
 }
 
-function dormantChip(p: ProviderSnapshot, width: number, focused: boolean): string {
-  const st = statusInfo(p);
+function dormantChip(p: ProviderSnapshot, width: number, focused: boolean, tick: number): string {
+  const st = statusInfo(p, tick);
   const mark = focused ? `${CYAN}▸${RESET}` : `${DIM}·${RESET}`;
-  const body = `${mark} ${p.displayName}  ${st.color}${st.label}${RESET}  ${DIM}${(p.hint || "").slice(0, 28)}${RESET}`;
-  return padPlain(body, width);
+  return padPlain(
+    `${mark} ${p.displayName}  ${st.color}${st.label}${RESET}  ${DIM}${(p.hint || "").slice(0, 36)}${RESET}`,
+    width,
+  );
 }
 
 interface Layout {
@@ -214,28 +283,38 @@ interface Layout {
   inner: number;
   margin: number;
   gap: number;
+  /** Lines inside each card (between borders) */
+  bodyH: number;
+  cardRows: number;
 }
 
-function computeLayout(cardCount: number): Layout {
+function computeLayout(fighterCount: number, chromeRows: number): Layout {
   const cols = Math.max(40, process.stdout.columns || 80);
   const rows = Math.max(16, process.stdout.rows || 24);
   const margin = MARGIN;
   const gap = GAP;
 
   let columns: 1 | 2 | 3 = 1;
-  if (cols >= 120 && cardCount >= 3) columns = 3;
-  else if (cols >= 72) columns = 2;
+  if (cols >= 140 && fighterCount >= 3) columns = 3;
+  else if (cols >= 88 && fighterCount >= 2) columns = 2;
+  else if (cols >= 72 && fighterCount >= 2) columns = 2;
 
   const usable = cols - margin * 2 - gap * (columns - 1);
   const cardOuter = Math.floor(usable / columns);
   const inner = Math.max(CARD_MIN_INNER, cardOuter - 2);
 
-  return { cols, rows, columns, inner, margin, gap };
+  const cardRows = Math.max(1, Math.ceil(Math.max(1, fighterCount) / columns));
+  const gapsBetweenRows = Math.max(0, cardRows - 1);
+  const available = Math.max(CARD_MIN_BODY + 2, rows - chromeRows - gapsBetweenRows);
+  const cardH = Math.max(CARD_MIN_BODY + 2, Math.floor(available / cardRows));
+  const bodyH = Math.max(CARD_MIN_BODY, cardH - 2);
+
+  return { cols, rows, columns, inner, margin, gap, bodyH, cardRows };
 }
 
 function zipN(cards: string[][], gap: number, rowOffset: number): string[] {
   if (!cards.length) return [];
-  const rows: string[] = [];
+  const out: string[] = [];
   const height = Math.max(...cards.map((c) => c.length));
   const widths = cards.map((c) => (c[0] ? vlen(c[0]) : 0));
 
@@ -251,27 +330,45 @@ function zipN(cards: string[][], gap: number, rowOffset: number): string[] {
       line += cell;
       col += widths[i]!;
     }
-    rows.push(line);
+    out.push(line);
   }
-  return rows;
+  return out;
 }
 
-function heroPick(report: RosterReport, cols: number): string {
+function heroPick(report: RosterReport, cols: number, tick: number): string {
   const pick = report.pick.line.replace(/^→\s*/, "").replace(/\s*★/, "");
+  const pulse = ["→", "▸", "→", "▹"][tick % 4]!;
   const inner = Math.max(20, cols - 4);
-  const text = `${BOLD}${WHITE}→  ${pick}${RESET}`;
+  const text = `${BOLD}${WHITE}${pulse}  ${pick}${RESET}`;
   return `${BG_HERO}  ${padPlain(text, inner)}${RESET}`;
 }
 
-function focusStrip(p: ProviderSnapshot | undefined, cols: number): string {
-  if (!p) return "";
-  const bits: string[] = [`${CYAN}${p.displayName}${RESET}`];
-  if (p.account) bits.push(`${DIM}${p.account}${RESET}`);
-  if (p.hint) bits.push(`${DIM}${p.hint.replace(/\s+/g, " ").slice(0, 48)}${RESET}`);
-  if (p.referral?.code) bits.push(`${FG_SOFT}ref ${p.referral.code}${RESET}`);
-  else if (p.referral?.label) bits.push(`${FG_SOFT}c · copy ref${RESET}`);
-  const line = bits.join(`${DIM}  ·  ${RESET}`);
-  return `  ${padPlain(line, cols - 4)}`;
+function focusPanel(p: ProviderSnapshot | undefined, cols: number, lines: number): string[] {
+  if (!p || lines <= 0) return Array.from({ length: Math.max(0, lines) }, () => "");
+  const out: string[] = [];
+  const st = statusInfo(p, 0);
+  const head = [
+    `${CYAN}${BOLD}${p.displayName}${RESET}`,
+    `${st.color}${st.label}${RESET}`,
+    p.subscription || p.plan || "",
+  ]
+    .filter(Boolean)
+    .join(`${DIM}  ·  ${RESET}`);
+  out.push(`  ${padPlain(head, cols - 4)}`);
+
+  if (lines >= 2) {
+    const bits: string[] = [];
+    if (p.account) bits.push(p.account);
+    if (p.score != null) bits.push(`${Math.round(p.score)}% used`);
+    if (p.referral?.code) bits.push(`ref ${p.referral.code}  ·  c copy`);
+    else if (p.referral?.label) bits.push("c · copy ref");
+    out.push(`  ${DIM}${padPlain(bits.join("  ·  ") || "—", cols - 4)}${RESET}`);
+  }
+  if (lines >= 3 && p.hint) {
+    out.push(`  ${DIM}${padPlain(p.hint.replace(/\s+/g, " "), cols - 4)}${RESET}`);
+  }
+  while (out.length < lines) out.push("");
+  return out.slice(0, lines);
 }
 
 function frame(
@@ -283,55 +380,81 @@ function frame(
     focus?: number;
     toast?: string;
     showDormant?: boolean;
+    tick?: number;
+    nextRefreshIn?: number;
   },
 ): string {
-  const showDormant = opts.showDormant !== false;
+  const tick = opts.tick ?? 0;
+  const showDormant = Boolean(opts.showDormant);
   const providers = report?.providers ?? [];
   const focusIdx = opts.focus ?? 0;
 
-  // Visual order: ready fighters first, then limping/ko, dormant last
   const indexed = providers.map((p, i) => ({ p, i }));
   const rank = (p: ProviderSnapshot): number => {
-    const st = statusInfo(p);
+    const st = statusInfo(p, 0);
     if (st.kind === "ready") return 0;
     if (st.kind === "warn") return 1;
     if (st.kind === "ko") return 2;
     if (st.kind === "auth") return 3;
     return 4;
   };
-  indexed.sort((a, b) => {
-    const d = rank(a.p) - rank(b.p);
-    if (d) return d;
-    return a.i - b.i;
-  });
+  indexed.sort((a, b) => rank(a.p) - rank(b.p) || a.i - b.i);
 
   const fighters = indexed.filter((x) => !isDormant(x.p));
   const dormant = indexed.filter((x) => isDormant(x.p));
 
-  const layout = computeLayout(Math.max(1, fighters.length));
-  const { cols, rows, columns, inner, margin, gap } = layout;
+  const dormantLines = dormant.length ? (showDormant ? 1 + dormant.length : 1) : 0;
+  // Fixed chrome — leftover rows go into card body height (fill the arena)
+  const chrome =
+    1 + // header
+    1 + // blank
+    1 + // hero
+    1 + // blank after hero
+    1 + // blank before focus
+    2 + // focus panel
+    dormantLines +
+    (dormantLines ? 1 : 0) +
+    1; // footer
+
+  const layout = computeLayout(fighters.length || 1, chrome);
+  const { cols, rows, columns, inner, margin, gap, bodyH } = layout;
+
+  if (cols < 60 || rows < 18) {
+    const msg = [
+      ` ${BOLD}llmquota${RESET}`,
+      "",
+      ` ${YELLOW}terminal too small${RESET}`,
+      ` ${DIM}need ≥ 60×18  ·  now ${cols}×${rows}${RESET}`,
+      ` ${DIM}resize and the arena will fill the space${RESET}`,
+    ];
+    const painted: string[] = [];
+    for (let r = 0; r < rows; r++) painted.push(paintLine(msg[r] ?? "", cols, r));
+    return painted.join("\n");
+  }
+
   const out: string[] = [];
   const indent = " ".repeat(margin);
 
-  // Header — brand + time only
   out.push(
     ` ${BOLD}${WHITE}llmquota${RESET}${FG_MUTE}  arena${RESET}` +
-      `${DIM}  ${opts.lastRefresh || ""}${RESET}`,
+      `${DIM}  ${opts.lastRefresh || ""}${RESET}` +
+      `${DIM}  ${cols}×${rows}${RESET}`,
   );
 
   if (opts.loading && !report) {
     out.push("");
-    out.push(`${DIM}  reading quotas…${RESET}`);
+    out.push(`  ${DIM}${["◐", "◓", "◑", "◒"][tick % 4]} reading quotas…${RESET}`);
   } else if (opts.error && !report) {
     out.push("");
-    out.push(`${RED}  ${opts.error}${RESET}`);
+    out.push(`  ${RED}${opts.error}${RESET}`);
   } else if (report) {
     out.push("");
-    out.push(heroPick(report, cols));
+    out.push(heroPick(report, cols, tick));
     out.push("");
 
-    // Fighter cards in responsive grid (original index preserved for focus)
-    const cards = fighters.map(({ p, i }) => fighterCard(p, inner, focusIdx === i));
+    const cards = fighters.map(({ p, i }) =>
+      fighterCard(p, inner, bodyH, focusIdx === i, tick),
+    );
 
     if (cards.length) {
       for (let i = 0; i < cards.length; i += columns) {
@@ -341,41 +464,45 @@ function frame(
       }
     }
 
-    // Dormant strip — one line each, or collapsed count
+    out.push("");
     if (dormant.length) {
-      out.push("");
       if (showDormant) {
         out.push(`  ${DIM}sidelined${RESET}`);
         for (const { p, i } of dormant) {
-          out.push(
-            `  ${dormantChip(p, cols - 4, focusIdx === i)}`,
-          );
+          out.push(`  ${dormantChip(p, cols - 4, focusIdx === i, tick)}`);
         }
       } else {
         out.push(
-          `  ${DIM}sidelined  ${dormant.length}  ·  press ${RESET}${CYAN}h${RESET}${DIM} to show${RESET}`,
+          `  ${DIM}sidelined ${dormant.length}  ·  ${RESET}${CYAN}h${RESET}${DIM} show${RESET}`,
         );
       }
+      out.push("");
     }
 
-    out.push("");
-    out.push(focusStrip(providers[focusIdx], cols));
-    if (opts.loading) out.push(`  ${DIM}refreshing…${RESET}`);
-    if (opts.toast) out.push(`  ${GREEN}${opts.toast}${RESET}`);
+    out.push(...focusPanel(providers[focusIdx], cols, 2));
+
+    if (opts.loading) {
+      out.push(`  ${DIM}${["◐", "◓", "◑", "◒"][tick % 4]} refreshing…${RESET}`);
+    } else if (opts.toast) {
+      out.push(`  ${GREEN}${opts.toast}${RESET}`);
+    }
   }
 
-  // Footer
   const n = providers.length;
   const focusHint = n <= 9 ? `1–${n}` : "1–9";
+  const eta =
+    opts.nextRefreshIn != null
+      ? `${Math.max(0, Math.ceil(opts.nextRefreshIn / 1000))}s`
+      : `${Math.round(REFRESH_MS / 1000)}s`;
   const footer =
-    `${FOOTER_BG}${DIM} ${focusHint}/tab/j/k  ·  c ref  ·  h sidelined  ·  r refresh  ·  q  ·  ${Math.round(REFRESH_MS / 1000)}s ${RESET}`;
+    `${FOOTER_BG}${DIM} ${focusHint}/tab/j/k  ·  c ref  ·  h sidelined  ·  r  ·  q  ·  next ${eta}  ·  │=pace ${RESET}`;
+
   while (out.length < rows - 1) out.push("");
-  out[rows - 1] = footer;
+  out.length = rows - 1;
+  out.push(footer);
 
   const painted: string[] = [];
-  for (let r = 0; r < rows; r++) {
-    painted.push(paintLine(out[r] ?? "", cols, r));
-  }
+  for (let r = 0; r < rows; r++) painted.push(paintLine(out[r] ?? "", cols, r));
   return painted.join("\n");
 }
 
@@ -399,12 +526,15 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
   let report: RosterReport | null = null;
   let loading = false;
   let error: string | null = null;
-  let timer: NodeJS.Timeout | null = null;
+  let refreshTimer: NodeJS.Timeout | null = null;
+  let tickTimer: NodeJS.Timeout | null = null;
   let closed = false;
   let focus = 0;
   let toast: string | null = null;
   let toastTimer: NodeJS.Timeout | null = null;
   let showDormant = false;
+  let tick = 0;
+  let lastFetchAt = Date.now();
 
   const showToast = (msg: string): void => {
     toast = msg;
@@ -428,6 +558,7 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
   const redraw = (): void => {
     if (closed) return;
     clampFocus();
+    const nextRefreshIn = Math.max(0, REFRESH_MS - (Date.now() - lastFetchAt));
     writeScreen(
       frame(report, {
         loading,
@@ -438,6 +569,8 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
         focus,
         toast: toast || undefined,
         showDormant,
+        tick,
+        nextRefreshIn,
       }),
     );
   };
@@ -448,7 +581,7 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
     redraw();
     try {
       report = await collectAll({ refresh: force || opts.refresh });
-      // Prefer focusing the pick / first ready fighter
+      lastFetchAt = Date.now();
       if (report.pick.id) {
         const idx = report.providers.findIndex(
           (p) => p.id === report!.pick.id && p.auth === "ok" && (p.score == null || p.score < 95),
@@ -466,7 +599,8 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
   const cleanup = (): void => {
     if (closed) return;
     closed = true;
-    if (timer) clearInterval(timer);
+    if (refreshTimer) clearInterval(refreshTimer);
+    if (tickTimer) clearInterval(tickTimer);
     if (toastTimer) clearTimeout(toastTimer);
     process.stdin.setRawMode(false);
     process.stdin.pause();
@@ -492,6 +626,10 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
       redraw();
       return;
     }
+    if (key === "?") {
+      showToast("│ pace marker · spark = trend · h sidelined · j/k move");
+      return;
+    }
     if (key >= "1" && key <= "9") {
       const idx = Number(key) - 1;
       if (report && idx < report.providers.length) {
@@ -500,7 +638,6 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
       }
       return;
     }
-    // j / down / tab → next
     if (key === "j" || key === "\t" || key === `${ESC}[B`) {
       if (report?.providers.length) {
         focus = (focus + 1) % report.providers.length;
@@ -508,7 +645,6 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
       }
       return;
     }
-    // k / up → prev
     if (key === "k" || key === `${ESC}[A`) {
       if (report?.providers.length) {
         focus = (focus - 1 + report.providers.length) % report.providers.length;
@@ -517,17 +653,14 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
       return;
     }
     if (key === "c" || key === "C") {
-      const p: ProviderSnapshot | undefined = report?.providers[focus];
+      const p = report?.providers[focus];
       const payload = p?.referral?.link || p?.referral?.label || p?.referral?.code;
       if (!payload) {
         showToast("no referral on this fighter");
         return;
       }
-      if (copyToClipboard(payload)) {
-        showToast(`copied ${p!.displayName} ref`);
-      } else {
-        showToast(payload.slice(0, 60));
-      }
+      if (copyToClipboard(payload)) showToast(`copied ${p!.displayName} ref`);
+      else showToast(payload.slice(0, 60));
     }
   };
 
@@ -543,11 +676,17 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
   });
 
   await load(false);
-  timer = setInterval(() => {
+
+  refreshTimer = setInterval(() => {
     void load(false);
   }, REFRESH_MS);
 
+  tickTimer = setInterval(() => {
+    tick = (tick + 1) % 4;
+    redraw();
+  }, TICK_MS);
+
   await new Promise<void>(() => {
-    /* resolved via process.exit in onKey */
+    /* resolved via process.exit */
   });
 }

@@ -14,7 +14,9 @@ pnpm build            # once (or after pulling src changes)
 
 Requires **Node 22+** (uses built-in `node:sqlite` for Cursor).
 
-TUI keys: **`1–9` / `tab` / `j` `k`** focus · **`c`** copy ref · **`h`** sidelined · **`r`** refresh · **`q`** quit (auto-refresh ~45s).
+TUI keys: **`1–9` / `tab` / `j` `k`** focus · **`c`** copy ref · **`h`** sidelined · **`?`** tips · **`r`** refresh · **`q`** quit (auto-refresh ~45s).
+
+Arena fills the terminal (btop-style widget dashboard): paced bars (`│` = time elapsed), sparklines, and a live countdown.
 
 If `pnpm install` asks about build scripts, allow **esbuild** (needed by the optional `tsx` dev runner). The project already has `pnpm-workspace.yaml` → `allowBuilds.esbuild: true`.
 
