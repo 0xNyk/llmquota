@@ -96,6 +96,7 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
     source: "none",
     error: null,
     hint: null,
+    referral: null,
     score: null,
   };
 

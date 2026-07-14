@@ -1,4 +1,5 @@
 import { collectAll, primaryMeter } from "./collect.js";
+import { copyToClipboard } from "./clipboard.js";
 import type { Meter, ProviderSnapshot, RosterReport } from "./types.js";
 
 const ESC = "\x1b";
@@ -14,7 +15,7 @@ const BG_DIM = `${ESC}[48;5;236m`;
 
 const REFRESH_MS = 45_000;
 const CARD_INNER = 34;
-const CARD_H = 10;
+const CARD_H = 11;
 
 type Level = "blue" | "green" | "yellow" | "red" | "unknown";
 
@@ -98,6 +99,10 @@ function providerCard(p: ProviderSnapshot, inner: number): string[] {
   if (p.account) {
     lines.push(`${DIM}${p.account}${RESET}`);
   }
+  if (p.referral?.label) {
+    const code = p.referral.code ? `${p.referral.code} ` : "";
+    lines.push(`${CYAN}ref${RESET}  ${code}${p.referral.link || p.referral.label}`);
+  }
 
   if (!p.installed) {
     lines.push(`${DIM}not installed${RESET}`);
@@ -135,7 +140,13 @@ function zipRows(left: string[], right: string[], gap = 2): string[] {
 
 function frame(
   report: RosterReport | null,
-  opts: { loading?: boolean; error?: string; lastRefresh?: string },
+  opts: {
+    loading?: boolean;
+    error?: string;
+    lastRefresh?: string;
+    focus?: number;
+    toast?: string;
+  },
 ): string {
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
@@ -155,7 +166,15 @@ function frame(
   } else if (opts.error && !report) {
     out.push(`${RED}  ${opts.error}${RESET}`);
   } else if (report) {
-    const cards = report.providers.map((p) => providerCard(p, inner));
+    const cards = report.providers.map((p, i) => {
+      const card = providerCard(p, inner);
+      if (opts.focus === i) {
+        return card.map((line, li) =>
+          li === 0 ? `${BOLD}${line}${RESET}` : line,
+        );
+      }
+      return card;
+    });
     if (useGrid) {
       out.push(...zipRows(cards[0]!, cards[1]!));
       out.push("");
@@ -170,17 +189,17 @@ function frame(
     out.push("");
     out.push(`  ${CYAN}${BOLD}${report.pick.line}${RESET}`);
     if (opts.loading) out.push(`  ${DIM}refreshing…${RESET}`);
-    for (const note of report.pathNotes.slice(0, 2)) {
+    if (opts.toast) out.push(`  ${GREEN}${opts.toast}${RESET}`);
+    for (const note of report.pathNotes.slice(0, 1)) {
       out.push(`  ${YELLOW}⚠${RESET} ${DIM}${note.slice(0, Math.max(20, cols - 6))}${RESET}`);
     }
   }
 
   out.push("");
   out.push(
-    `  ${BG_DIM}${DIM} r refresh  ·  q quit  ·  auto ${Math.round(REFRESH_MS / 1000)}s ${RESET}`,
+    `  ${BG_DIM}${DIM} 1-4 focus  ·  c copy ref  ·  r refresh  ·  q quit  ·  auto ${Math.round(REFRESH_MS / 1000)}s ${RESET}`,
   );
 
-  // pad / clip to terminal
   const clipped = out.slice(0, Math.max(1, rows - 1));
   while (clipped.length < rows - 1) clipped.push("");
   return clipped.map((l) => padVisible(l, cols)).join("\n");
@@ -208,6 +227,19 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
   let error: string | null = null;
   let timer: NodeJS.Timeout | null = null;
   let closed = false;
+  let focus = 0;
+  let toast: string | null = null;
+  let toastTimer: NodeJS.Timeout | null = null;
+
+  const showToast = (msg: string): void => {
+    toast = msg;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toast = null;
+      redraw();
+    }, 2500);
+    redraw();
+  };
 
   const redraw = (): void => {
     if (closed) return;
@@ -218,6 +250,8 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
         lastRefresh: report?.checkedAt
           ? new Date(report.checkedAt).toLocaleTimeString()
           : undefined,
+        focus,
+        toast: toast || undefined,
       }),
     );
   };
@@ -240,6 +274,7 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
     if (closed) return;
     closed = true;
     if (timer) clearInterval(timer);
+    if (toastTimer) clearTimeout(toastTimer);
     process.stdin.setRawMode(false);
     process.stdin.pause();
     leaveAlt();
@@ -257,6 +292,25 @@ export async function runTui(opts: { refresh?: boolean } = {}): Promise<void> {
     }
     if (key === "r" || key === "R") {
       void load(true);
+      return;
+    }
+    if (key >= "1" && key <= "4") {
+      focus = Number(key) - 1;
+      redraw();
+      return;
+    }
+    if (key === "c" || key === "C") {
+      const p: ProviderSnapshot | undefined = report?.providers[focus];
+      const payload = p?.referral?.link || p?.referral?.label || p?.referral?.code;
+      if (!payload) {
+        showToast(`${p?.displayName || "provider"}: no referral code — set ~/.config/llmquota/referrals.json`);
+        return;
+      }
+      if (copyToClipboard(payload)) {
+        showToast(`copied ${p!.displayName} referral → clipboard`);
+      } else {
+        showToast(`clipboard failed — ${payload}`);
+      }
     }
   };
 

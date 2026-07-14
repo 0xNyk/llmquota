@@ -122,6 +122,15 @@ function renderProvider(p: ProviderSnapshot, opts: CliOptions): string {
   if (p.account) {
     lines.push(`  ${c(opts, DIM, "account")}       ${p.account}`);
   }
+  if (p.referral?.label) {
+    const codeBit = p.referral.code ? `${p.referral.code}  ` : "";
+    lines.push(
+      `  ${c(opts, CYAN, "referral")}     ${codeBit}${p.referral.link || p.referral.label}`,
+    );
+    if (p.referral.detail) {
+      lines.push(c(opts, DIM, `               ${p.referral.detail}`));
+    }
+  }
 
   if (p.binary) {
     lines.push(c(opts, DIM, `  ${p.binary}`));
@@ -167,5 +176,32 @@ export function renderDoctor(report: RosterReport, opts: CliOptions): string {
 
   lines.push("");
   lines.push(c(opts, CYAN, report.pick.line));
+  return lines.join("\n") + "\n";
+}
+
+export function renderRefs(report: RosterReport, opts: CliOptions): string {
+  const lines: string[] = [];
+  lines.push(c(opts, BOLD, "llmquota referrals"));
+  lines.push(c(opts, DIM, "copy with: llmquota copy <claude|codex|cursor|grok>"));
+  lines.push("");
+  for (const p of report.providers) {
+    const ref = p.referral;
+    if (!ref?.label) {
+      lines.push(`${p.displayName.padEnd(8)}  ${c(opts, DIM, "— none (set ~/.config/llmquota/referrals.json)")}`);
+      continue;
+    }
+    const code = ref.code ? `${ref.code}  ` : "";
+    lines.push(`${c(opts, BOLD, p.displayName.padEnd(8))}  ${code}${ref.link || ref.label}`);
+    if (ref.detail) lines.push(c(opts, DIM, `          ${ref.detail}`));
+    lines.push(c(opts, DIM, `          source: ${ref.source}`));
+  }
+  lines.push("");
+  lines.push(
+    c(
+      opts,
+      DIM,
+      "Config: ~/.config/llmquota/referrals.json  ·  Claude auto-reads ~/.claude.json guest passes",
+    ),
+  );
   return lines.join("\n") + "\n";
 }

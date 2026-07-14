@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 import { collectAll } from "./collect.js";
-import { renderDoctor, renderRoster } from "./render.js";
+import { copyToClipboard } from "./clipboard.js";
+import { renderDoctor, renderRefs, renderRoster } from "./render.js";
 import { runTui } from "./tui.js";
-import type { CliOptions } from "./types.js";
+import type { CliOptions, ProviderId } from "./types.js";
 
 function parseArgs(argv: string[]): CliOptions & {
   help: boolean;
   version: boolean;
   tui: boolean;
   once: boolean;
+  refs: boolean;
+  copy: string | null;
 } {
   const opts = {
     json: false,
@@ -21,8 +24,11 @@ function parseArgs(argv: string[]): CliOptions & {
     version: false,
     tui: false,
     once: false,
+    refs: false,
+    copy: null as string | null,
   };
-  for (const a of argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
     if (a === "--json" || a === "-j") opts.json = true;
     else if (a === "--plain") opts.plain = true;
     else if (a === "--style" || a === "--emoji" || a === "--style=emoji") opts.emoji = true;
@@ -30,7 +36,11 @@ function parseArgs(argv: string[]): CliOptions & {
     else if (a === "doctor" || a === "--doctor") opts.doctor = true;
     else if (a === "tui" || a === "--tui") opts.tui = true;
     else if (a === "--once" || a === "roster") opts.once = true;
-    else if (a === "--refresh") opts.refresh = true;
+    else if (a === "refs" || a === "referrals" || a === "--refs") opts.refs = true;
+    else if (a === "copy" || a === "--copy") {
+      opts.copy = argv[i + 1] || "claude";
+      if (argv[i + 1]) i++;
+    } else if (a === "--refresh") opts.refresh = true;
     else if (a === "--help" || a === "-h") opts.help = true;
     else if (a === "--version" || a === "-v") opts.version = true;
   }
@@ -48,12 +58,18 @@ Usage:
   llmquota --once       one-shot text roster
   llmquota who          one-liner: who has headroom
   llmquota doctor       PATH + auth diagnostics
+  llmquota refs         show referral / affiliate codes
+  llmquota copy <name>  copy a referral link (claude|codex|cursor|grok)
   llmquota --json       machine-readable snapshot
   llmquota --plain      no ANSI colors (text mode)
   llmquota --style emoji
   llmquota --refresh    bypass Claude usage cache (~90s)
 
-TUI keys:  r refresh  ·  q quit
+TUI keys:  1-4 focus  ·  c copy ref  ·  r refresh  ·  q quit
+
+Referrals:
+  Claude auto-reads ~/.claude.json guest-pass link when available.
+  Set others in ~/.config/llmquota/referrals.json
 
 Read-only. Never rotates accounts (that's silo / aistat territory).
 `;
@@ -76,6 +92,8 @@ async function main(): Promise<void> {
       !opts.json &&
       !opts.who &&
       !opts.doctor &&
+      !opts.refs &&
+      !opts.copy &&
       !opts.plain &&
       Boolean(process.stdout.isTTY) &&
       Boolean(process.stdin.isTTY));
@@ -87,8 +105,38 @@ async function main(): Promise<void> {
 
   const report = await collectAll({ refresh: opts.refresh });
 
+  if (opts.copy) {
+    const id = opts.copy.toLowerCase() as ProviderId;
+    const p = report.providers.find((x) => x.id === id || x.displayName.toLowerCase() === id);
+    if (!p) {
+      process.stderr.write(`unknown provider: ${opts.copy}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const payload = p.referral?.link || p.referral?.label || p.referral?.code;
+    if (!payload) {
+      process.stderr.write(
+        `no referral for ${p.displayName}. Set ~/.config/llmquota/referrals.json or open Claude /passes.\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (copyToClipboard(payload)) {
+      process.stdout.write(`copied ${p.displayName} referral to clipboard\n${payload}\n`);
+    } else {
+      process.stdout.write(`${payload}\n`);
+      process.stderr.write("(clipboard unavailable — printed link above)\n");
+    }
+    return;
+  }
+
   if (opts.json) {
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    return;
+  }
+
+  if (opts.refs) {
+    process.stdout.write(renderRefs(report, opts));
     return;
   }
 
