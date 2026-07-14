@@ -1,4 +1,4 @@
-import { collectAll, primaryMeter } from "./collect.js";
+import { collectAll } from "./collect.js";
 import { copyToClipboard } from "./clipboard.js";
 import type { Meter, ProviderSnapshot, RosterReport } from "./types.js";
 
