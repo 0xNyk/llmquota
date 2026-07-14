@@ -1,12 +1,17 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
+import { join } from "node:path";
+import {
+  discoverClaudeProfiles,
+  loadLlmquotaConfig,
+  type ClaudeProfileTarget,
+} from "../profiles.js";
 import type { Meter, ProviderSnapshot } from "../types.js";
 import {
   availableInFromIso,
   fetchJson,
   headroomScore,
-  home,
   readCache,
   writeCache,
 } from "../util.js";
@@ -16,7 +21,6 @@ import { detectClaude } from "./detect.js";
 const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
-/** Refresh a minute before wall-clock expiry. */
 const EXPIRY_SKEW_MS = 60_000;
 
 interface ClaudeUsageWindow {
@@ -59,14 +63,13 @@ function nonEmpty(s: string | undefined | null): s is string {
 
 function normalizeExpiresAt(raw: number | undefined): number | undefined {
   if (raw == null || !Number.isFinite(raw) || raw <= 0) return undefined;
-  // Seconds vs ms heuristic (same idea as Cursor epochs).
   return raw < 1e12 ? raw * 1000 : raw;
 }
 
 function accessExpired(creds: ClaudeCreds, skewMs = EXPIRY_SKEW_MS): boolean {
   if (!nonEmpty(creds.accessToken)) return true;
   const exp = normalizeExpiresAt(creds.expiresAt);
-  if (exp == null) return false; // unknown expiry — try the token
+  if (exp == null) return false;
   return exp <= Date.now() + skewMs;
 }
 
@@ -101,8 +104,14 @@ function readKeychainRaw(): { claudeAiOauth?: ClaudeOauthBlob } | null {
   }
 }
 
-function readFileRaw(): { path: string; data: { claudeAiOauth?: ClaudeOauthBlob } } | null {
-  const path = home(".claude", ".credentials.json");
+function credsFilePath(configDir: string): string {
+  return join(configDir, ".credentials.json");
+}
+
+function readFileRaw(
+  configDir: string,
+): { path: string; data: { claudeAiOauth?: ClaudeOauthBlob } } | null {
+  const path = credsFilePath(configDir);
   if (!existsSync(path)) return null;
   try {
     return {
@@ -124,7 +133,6 @@ function readEnvCreds(): ClaudeCreds | null {
 }
 
 function scoreCreds(c: ClaudeCreds): number {
-  // Prefer live access tokens; then furthest expiry; then presence of refresh.
   let s = 0;
   if (nonEmpty(c.accessToken) && !accessExpired(c)) s += 1_000_000_000_000;
   else if (nonEmpty(c.accessToken)) s += 1_000_000_000;
@@ -143,25 +151,34 @@ function mergeMeta(into: ClaudeCreds, from: ClaudeCreds): void {
   }
 }
 
-function readClaudeCreds(): ClaudeCreds | null {
+/** Scoped credential read — silo profiles never merge global Keychain (shared on macOS). */
+function readClaudeCreds(target: ClaudeProfileTarget): ClaudeCreds | null {
   const candidates: ClaudeCreds[] = [];
 
-  const env = readEnvCreds();
-  if (env) candidates.push(env);
+  // Env token only applies to the active / default slot
+  if (target.useKeychain || target.active) {
+    const env = readEnvCreds();
+    if (env) candidates.push(env);
+  }
 
-  const kc = fromOauth(readKeychainRaw()?.claudeAiOauth, "keychain");
-  if (kc) candidates.push(kc);
+  if (target.useKeychain) {
+    const kc = fromOauth(readKeychainRaw()?.claudeAiOauth, "keychain");
+    if (kc) candidates.push(kc);
+  }
 
-  const file = readFileRaw();
-  const fileCreds = fromOauth(file?.data.claudeAiOauth, "file");
+  const file = readFileRaw(target.configDir);
+  const fileCreds = fromOauth(file?.data.claudeAiOauth, `file:${target.profileId}`);
   if (fileCreds) candidates.push(fileCreds);
 
-  // Metadata-only keychain (empty tokens) still carries plan labels
-  const kcMeta = readKeychainRaw()?.claudeAiOauth;
-  if (kcMeta && (!nonEmpty(kcMeta.accessToken) && !nonEmpty(kcMeta.refreshToken))) {
-    for (const c of candidates) {
-      if (!c.subscriptionType && kcMeta.subscriptionType) c.subscriptionType = kcMeta.subscriptionType;
-      if (!c.rateLimitTier && kcMeta.rateLimitTier) c.rateLimitTier = kcMeta.rateLimitTier;
+  if (target.useKeychain) {
+    const kcMeta = readKeychainRaw()?.claudeAiOauth;
+    if (kcMeta && !nonEmpty(kcMeta.accessToken) && !nonEmpty(kcMeta.refreshToken)) {
+      for (const c of candidates) {
+        if (!c.subscriptionType && kcMeta.subscriptionType) {
+          c.subscriptionType = kcMeta.subscriptionType;
+        }
+        if (!c.rateLimitTier && kcMeta.rateLimitTier) c.rateLimitTier = kcMeta.rateLimitTier;
+      }
     }
   }
 
@@ -172,7 +189,7 @@ function readClaudeCreds(): ClaudeCreds | null {
   return best;
 }
 
-function persistClaudeCreds(creds: ClaudeCreds): void {
+function persistClaudeCreds(creds: ClaudeCreds, target: ClaudeProfileTarget): void {
   const oauth: ClaudeOauthBlob = {
     accessToken: creds.accessToken,
     refreshToken: creds.refreshToken,
@@ -182,12 +199,11 @@ function persistClaudeCreds(creds: ClaudeCreds): void {
     subscriptionType: creds.subscriptionType,
     rateLimitTier: creds.rateLimitTier,
   };
-  // Drop undefined keys so we don't wipe optional fields with nulls awkwardly
   for (const k of Object.keys(oauth) as Array<keyof ClaudeOauthBlob>) {
     if (oauth[k] === undefined) delete oauth[k];
   }
 
-  const filePath = home(".claude", ".credentials.json");
+  const filePath = credsFilePath(target.configDir);
   let data: { claudeAiOauth?: ClaudeOauthBlob } = {};
   if (existsSync(filePath)) {
     try {
@@ -198,6 +214,9 @@ function persistClaudeCreds(creds: ClaudeCreds): void {
   }
   data.claudeAiOauth = { ...data.claudeAiOauth, ...oauth };
   writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+
+  // Keychain is a single shared item on macOS — only the default slot may write it.
+  if (!target.useKeychain) return;
 
   const payload = JSON.stringify({ claudeAiOauth: data.claudeAiOauth });
   try {
@@ -216,12 +235,13 @@ function persistClaudeCreds(creds: ClaudeCreds): void {
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   } catch {
-    /* file write is enough for detection; Keychain may be locked */
+    /* file write is enough */
   }
 }
 
 async function refreshClaudeAccess(
   creds: ClaudeCreds,
+  target: ClaudeProfileTarget,
 ): Promise<{ ok: true; creds: ClaudeCreds } | { ok: false; error: string }> {
   if (!nonEmpty(creds.refreshToken)) {
     return { ok: false, error: "no refresh token" };
@@ -268,8 +288,7 @@ async function refreshClaudeAccess(
     source: `${creds.source}+refresh`,
   };
 
-  // Persist immediately — Anthropic rotates refresh tokens; losing the new one bricks auth.
-  persistClaudeCreds(next);
+  persistClaudeCreds(next, target);
   return { ok: true, creds: next };
 }
 
@@ -301,7 +320,6 @@ function meterFrom(
 ): Meter | null {
   if (!w || w.utilization == null) return null;
   const used = Number(w.utilization);
-  // API may return 0–1 or 0–100
   const usedPercent = used <= 1 ? used * 100 : used;
   return {
     name,
@@ -313,11 +331,18 @@ function meterFrom(
   };
 }
 
-export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<ProviderSnapshot> {
-  const bin = detectClaude();
-  const base: ProviderSnapshot = {
+function displayNameFor(target: ClaudeProfileTarget): string {
+  if (target.profileId === "default") return "Claude";
+  return `Claude · ${target.profileLabel}`;
+}
+
+function emptySnapshot(
+  bin: ReturnType<typeof detectClaude>,
+  target: ClaudeProfileTarget,
+): ProviderSnapshot {
+  return {
     id: "claude",
-    displayName: "Claude",
+    displayName: displayNameFor(target),
     installed: bin.installed,
     binary: bin.path,
     version: bin.version,
@@ -331,16 +356,39 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
     hint: null,
     referral: null,
     score: null,
+    profileId: target.profileId,
+    profileLabel: target.profileLabel,
+    configDir: target.configDir,
+    active: target.active,
   };
+}
+
+export async function collectClaudeProfile(
+  target: ClaudeProfileTarget,
+  opts: { refresh?: boolean } = {},
+): Promise<ProviderSnapshot> {
+  const bin = detectClaude();
+  const base = emptySnapshot(bin, target);
 
   if (!bin.installed) {
     base.hint = "Install Claude Code, then run `claude` and sign in.";
     return base;
   }
 
-  let creds = readClaudeCreds();
+  if (!target.hasCreds && !target.useKeychain) {
+    base.hint =
+      target.source === "silo"
+        ? `Run \`silo auth login ${target.profileId}\`.`
+        : "Run `claude` and complete `/login`.";
+    return base;
+  }
+
+  let creds = readClaudeCreds(target);
   if (!creds) {
-    base.hint = "Run `claude` and complete `/login`.";
+    base.hint =
+      target.source === "silo"
+        ? `Run \`silo auth login ${target.profileId}\`.`
+        : "Run `claude` and complete `/login`.";
     return base;
   }
 
@@ -349,25 +397,31 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
 
   if (accessExpired(creds)) {
     if (nonEmpty(creds.refreshToken)) {
-      const refreshed = await refreshClaudeAccess(creds);
+      const refreshed = await refreshClaudeAccess(creds, target);
       if (refreshed.ok) {
         creds = refreshed.creds;
       } else {
         base.auth = "expired";
         base.error = refreshed.error;
-        base.hint = "Token expired — open `claude` and re-auth (`/login`).";
+        base.hint =
+          target.source === "silo"
+            ? `Token expired — \`silo auth login ${target.profileId}\`.`
+            : "Token expired — open `claude` and re-auth (`/login`).";
         return base;
       }
     } else {
       base.auth = "expired";
-      base.hint = "Token expired — open `claude` and re-auth (`/login`).";
+      base.hint =
+        target.source === "silo"
+          ? `Token expired — \`silo auth login ${target.profileId}\`.`
+          : "Token expired — open `claude` and re-auth (`/login`).";
       return base;
     }
   }
 
   base.auth = "ok";
 
-  const cacheKey = "claude-usage";
+  const cacheKey = `claude-usage-${target.profileId}`;
   if (!opts.refresh) {
     const cached = readCache<ClaudeUsagePayload>(cacheKey, 90_000);
     if (cached) {
@@ -378,29 +432,25 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
     }
   }
 
-  const res = await fetchJson("https://api.anthropic.com/api/oauth/usage", {
-    headers: {
-      Authorization: `Bearer ${creds.accessToken}`,
-      "anthropic-beta": "oauth-2025-04-20",
-      "User-Agent": `claude-cli/${bin.version || "2.1.0"} (external, cli)`,
-      "Content-Type": "application/json",
-    },
-  });
+  const fetchUsage = (token: string) =>
+    fetchJson("https://api.anthropic.com/api/oauth/usage", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": `claude-cli/${bin.version || "2.1.0"} (external, cli)`,
+        "Content-Type": "application/json",
+      },
+    });
+
+  let res = await fetchUsage(creds.accessToken);
 
   if (res.status === 401 && nonEmpty(creds.refreshToken)) {
-    const refreshed = await refreshClaudeAccess(creds);
+    const refreshed = await refreshClaudeAccess(creds, target);
     if (refreshed.ok) {
       creds = refreshed.creds;
-      const retry = await fetchJson("https://api.anthropic.com/api/oauth/usage", {
-        headers: {
-          Authorization: `Bearer ${creds.accessToken}`,
-          "anthropic-beta": "oauth-2025-04-20",
-          "User-Agent": `claude-cli/${bin.version || "2.1.0"} (external, cli)`,
-          "Content-Type": "application/json",
-        },
-      });
-      if (retry.ok && retry.json && typeof retry.json === "object") {
-        const payload = retry.json as ClaudeUsagePayload;
+      res = await fetchUsage(creds.accessToken);
+      if (res.ok && res.json && typeof res.json === "object") {
+        const payload = res.json as ClaudeUsagePayload;
         writeCache(cacheKey, payload);
         base.windows = collectWindows(payload);
         base.source = "oauth_usage(refreshed)";
@@ -410,7 +460,10 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
     } else {
       base.auth = "expired";
       base.error = refreshed.error;
-      base.hint = "Token expired — open `claude` and re-auth (`/login`).";
+      base.hint =
+        target.source === "silo"
+          ? `Token expired — \`silo auth login ${target.profileId}\`.`
+          : "Token expired — open `claude` and re-auth (`/login`).";
       return base;
     }
   }
@@ -436,6 +489,33 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
   base.source = "oauth_usage";
   base.score = headroomScore(base.windows.map((w) => w.usedPercent));
   return base;
+}
+
+/** Collect default + silo Claude profiles (see https://github.com/0xNyk/silo). */
+export async function collectClaudeAll(
+  opts: { refresh?: boolean } = {},
+): Promise<ProviderSnapshot[]> {
+  const cfg = loadLlmquotaConfig();
+  const targets = discoverClaudeProfiles(cfg);
+  // Cap parallel usage fetches so we don't stampede Anthropic
+  const out: ProviderSnapshot[] = [];
+  const concurrency = 3;
+  for (let i = 0; i < targets.length; i += concurrency) {
+    const batch = targets.slice(i, i + concurrency);
+    const snaps = await Promise.all(batch.map((t) => collectClaudeProfile(t, opts)));
+    out.push(...snaps);
+  }
+  return out;
+}
+
+/** Back-compat: single default (or first) Claude snapshot. */
+export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<ProviderSnapshot> {
+  const all = await collectClaudeAll(opts);
+  return (
+    all.find((p) => p.active && p.auth === "ok") ||
+    all.find((p) => p.profileId === "default") ||
+    all[0]!
+  );
 }
 
 function collectWindows(payload: ClaudeUsagePayload): Meter[] {

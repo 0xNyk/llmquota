@@ -65,13 +65,19 @@ Usage:
   llmquota --style emoji
   llmquota --refresh    bypass Claude usage cache (~90s)
 
-TUI keys:  1-4 focus  ·  c copy ref  ·  r refresh  ·  q quit
+TUI keys:  1-9 focus  ·  tab next  ·  c copy ref  ·  r refresh  ·  q quit
+
+Multi-profile (Claude via silo):
+  Discovers ~/.claude plus ~/.silo/profiles/* (https://github.com/0xNyk/silo).
+  Only slots with credentials are shown by default (plus silo default).
+  Optional ~/.config/llmquota/config.json:
+    { "includeNeedLogin": false, "claudeProfiles": ["personal","work"] }
 
 Referrals:
   Claude auto-reads ~/.claude.json guest-pass link when available.
   Set others in ~/.config/llmquota/referrals.json
 
-Read-only. Never rotates accounts (that's silo / aistat territory).
+Read-only. Never rotates / switches accounts (use silo for that).
 `;
 }
 
@@ -106,10 +112,17 @@ async function main(): Promise<void> {
   const report = await collectAll({ refresh: opts.refresh });
 
   if (opts.copy) {
-    const id = opts.copy.toLowerCase() as ProviderId;
-    const p = report.providers.find((x) => x.id === id || x.displayName.toLowerCase() === id);
+    const q = opts.copy.toLowerCase();
+    const p =
+      report.providers.find(
+        (x) =>
+          x.id === q ||
+          x.displayName.toLowerCase() === q ||
+          x.profileId.toLowerCase() === q ||
+          `${x.id}:${x.profileId}`.toLowerCase() === q,
+      ) || report.providers.find((x) => x.id === (q as ProviderId));
     if (!p) {
-      process.stderr.write(`unknown provider: ${opts.copy}\n`);
+      process.stderr.write(`unknown provider/profile: ${opts.copy}\n`);
       process.exitCode = 1;
       return;
     }

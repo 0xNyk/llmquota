@@ -1,20 +1,21 @@
 import type { Meter, ProviderSnapshot, RosterReport } from "./types.js";
-import { collectClaude } from "./providers/claude.js";
+import { collectClaudeAll } from "./providers/claude.js";
 import { collectCodex } from "./providers/codex.js";
 import { collectCursor } from "./providers/cursor.js";
 import { pathCollisionNotes } from "./providers/detect.js";
-import { collectGrok } from "./providers/grok.js";
+import { collectGrokAll } from "./providers/grok.js";
 import { attachReferrals } from "./referrals.js";
 
 export async function collectAll(opts: { refresh?: boolean } = {}): Promise<RosterReport> {
-  const providers = attachReferrals(
-    await Promise.all([
-      collectClaude({ refresh: opts.refresh }),
-      collectCodex(),
-      collectCursor(),
-      collectGrok(),
-    ]),
-  );
+  const [claude, codex, cursor, grok] = await Promise.all([
+    collectClaudeAll({ refresh: opts.refresh }),
+    collectCodex(),
+    collectCursor(),
+    collectGrokAll(),
+  ]);
+
+  const providers = attachReferrals([...claude, codex, cursor, ...grok]);
+  providers.sort(compareSnapshots);
 
   return {
     checkedAt: new Date().toISOString(),
@@ -22,6 +23,26 @@ export async function collectAll(opts: { refresh?: boolean } = {}): Promise<Rost
     pick: pickFighter(providers),
     pathNotes: pathCollisionNotes(),
   };
+}
+
+const PROVIDER_ORDER: Record<string, number> = {
+  claude: 0,
+  codex: 1,
+  cursor: 2,
+  grok: 3,
+};
+
+function compareSnapshots(a: ProviderSnapshot, b: ProviderSnapshot): number {
+  const po = (PROVIDER_ORDER[a.id] ?? 9) - (PROVIDER_ORDER[b.id] ?? 9);
+  if (po) return po;
+  if (a.active !== b.active) return a.active ? -1 : 1;
+  if (a.profileId === "default" && b.profileId !== "default") return -1;
+  if (b.profileId === "default" && a.profileId !== "default") return 1;
+  const authRank = (p: ProviderSnapshot) =>
+    p.auth === "ok" ? 0 : p.auth === "expired" ? 1 : p.auth === "error" ? 2 : 3;
+  const ar = authRank(a) - authRank(b);
+  if (ar) return ar;
+  return a.profileLabel.localeCompare(b.profileLabel);
 }
 
 export function pickFighter(providers: ProviderSnapshot[]): RosterReport["pick"] {
@@ -50,6 +71,8 @@ export function pickFighter(providers: ProviderSnapshot[]): RosterReport["pick"]
   ready.sort((a, b) => {
     const sa = a.score ?? 50;
     const sb = b.score ?? 50;
+    // Prefer active profile on a tie
+    if (sa === sb) return Number(b.active) - Number(a.active);
     return sa - sb;
   });
   const best = ready[0]!;
@@ -61,7 +84,7 @@ export function pickFighter(providers: ProviderSnapshot[]): RosterReport["pick"]
     : `${sub ? `${sub} · ` : ""}${used}`;
   return {
     id: best.id,
-    line: `→ fight with ${best.displayName} (${detail})`,
+    line: `→ fight with ${best.displayName}${best.active ? " ★" : ""} (${detail})`,
   };
 }
 

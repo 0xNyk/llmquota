@@ -33,12 +33,28 @@ ln -sfn "$(pwd)/llmquota" ~/.local/bin/llmquota
 
 | Provider | How |
 |---|---|
-| Claude | Keychain / `.credentials.json` (+ `CLAUDE_CODE_OAUTH_TOKEN`) → refresh via `platform.claude.com` → OAuth usage (cached ~90s) |
+| Claude | `~/.claude` + each [silo](https://github.com/0xNyk/silo) profile under `~/.silo/profiles/*` → refresh via `platform.claude.com` → OAuth usage (cached ~90s). Keychain only for the default slot. |
 | Codex | `~/.codex/auth.json` → ChatGPT WHAM usage |
 | Cursor | Cursor `state.vscdb` token → dashboard period usage |
-| Grok | `~/.grok/auth.json` JWT + API probe (SuperGrok weekly pool not on a stable public endpoint yet) |
+| Grok | Every entry in `~/.grok/auth.json` (JWT + API probe) |
 
-**Read-only.** No account switching.
+**Read-only.** No account switching (use **silo** to launch Claude as a profile).
+
+### Multi-profile config
+
+Optional `~/.config/llmquota/config.json`:
+
+```json
+{
+  "includeClaudeDefault": true,
+  "includeNeedLogin": false,
+  "claudeProfiles": ["personal", "work"]
+}
+```
+
+- Default: show `~/.claude` plus silo profiles that already have credentials (and the silo default even if empty).
+- Set `includeNeedLogin: true` to list every silo shell waiting on `silo auth login`.
+- `claudeProfiles` allowlists silo names when set.
 
 ## Privacy / OSS stance
 
