@@ -4,6 +4,7 @@ Fun terminal **roster** for Claude Code · Codex · Cursor · Grok rate limits �
 
 ```bash
 pnpm install
+pnpm build            # once (or after pulling src changes)
 ./llmquota              # roster
 ./llmquota who          # one-liner pick
 ./llmquota doctor       # PATH + auth
@@ -11,6 +12,8 @@ pnpm install
 ```
 
 Requires **Node 22+** (uses built-in `node:sqlite` for Cursor).
+
+If `pnpm install` asks about build scripts, allow **esbuild** (needed by the optional `tsx` dev runner). The project already has `pnpm-workspace.yaml` → `allowBuilds.esbuild: true`.
 
 ```bash
 # optional: put on PATH
