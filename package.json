@@ -1,0 +1,26 @@
+{
+  "name": "llmquota",
+  "version": "0.1.0",
+  "description": "Fun terminal roster for Claude / Codex / Cursor / Grok rate limits",
+  "type": "module",
+  "bin": {
+    "llmquota": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "llmquota": "tsx src/index.ts",
+    "who": "tsx src/index.ts who",
+    "doctor": "tsx src/index.ts doctor"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
