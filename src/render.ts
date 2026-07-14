@@ -104,6 +104,7 @@ export function renderRoster(report: RosterReport, opts: CliOptions): string {
 
 function renderProvider(p: ProviderSnapshot, opts: CliOptions): string {
   const tag = statusTag(p);
+  const sub = p.subscription || (p.plan ? `${p.displayName} ${p.plan}` : null);
   const plan = p.plan ? c(opts, DIM, ` · ${p.plan}`) : "";
   const ver = p.version ? c(opts, DIM, `  ${p.version}`) : "";
   const head = `${levelGlyph(opts, primaryMeter(p)?.usedPercent ?? null)} ${c(opts, BOLD, p.displayName)}${plan}  ${tag}${ver}`;
@@ -113,6 +114,13 @@ function renderProvider(p: ProviderSnapshot, opts: CliOptions): string {
   if (!p.installed) {
     lines.push(c(opts, DIM, `  ${p.hint || "not on PATH"}`));
     return lines.join("\n");
+  }
+
+  if (sub) {
+    lines.push(`  ${c(opts, CYAN, "subscription")}  ${sub}`);
+  }
+  if (p.account) {
+    lines.push(`  ${c(opts, DIM, "account")}       ${p.account}`);
   }
 
   if (p.binary) {
@@ -142,7 +150,7 @@ export function renderDoctor(report: RosterReport, opts: CliOptions): string {
     const ok = p.installed && p.auth === "ok";
     const mark = ok ? c(opts, GREEN, "OK") : c(opts, YELLOW, "…");
     lines.push(
-      `${mark} ${p.displayName.padEnd(8)} installed=${p.installed} auth=${p.auth} source=${p.source}`,
+      `${mark} ${p.displayName.padEnd(8)} installed=${p.installed} auth=${p.auth} sub=${p.subscription || p.plan || "?"} source=${p.source}`,
     );
     if (p.binary) lines.push(c(opts, DIM, `     bin ${p.binary}`));
     if (p.error) lines.push(c(opts, RED, `     ${p.error}`));

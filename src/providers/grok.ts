@@ -138,6 +138,7 @@ export async function collectGrok(): Promise<ProviderSnapshot> {
     version: bin.version,
     auth: "missing",
     plan: null,
+    subscription: null,
     account: null,
     windows: [],
     source: "none",
@@ -165,6 +166,11 @@ export async function collectGrok(): Promise<ProviderSnapshot> {
     if (!refreshed.ok) {
       base.auth = "expired";
       base.error = refreshed.error || "token refresh failed";
+      const claims = entry.key ? decodeJwtPayload(entry.key) : null;
+      const tier = typeof claims?.tier === "number" ? claims.tier : null;
+      base.plan = tier != null ? `tier ${tier}` : null;
+      base.subscription =
+        tier != null ? `Grok · xAI API tier ${tier}` : "Grok · OIDC (expired)";
       base.hint =
         "Access JWT expired and refresh failed. Wait a few minutes before `grok login` (device-code is rate-limited / slow_down).";
       return base;
@@ -179,6 +185,9 @@ export async function collectGrok(): Promise<ProviderSnapshot> {
   base.auth = "ok";
   const tier = typeof claims?.tier === "number" ? claims.tier : null;
   base.plan = tier != null ? `tier ${tier}` : (entry.auth_mode as string) || "oidc";
+  base.subscription =
+    tier != null ? `Grok · xAI API tier ${tier}` : `Grok · ${(entry.auth_mode as string) || "OIDC"}`;
+  // SuperGrok product tier isn't on the JWT; weekly pool lives in Settings → Usage
   if (!base.source || base.source === "none") base.source = "local_auth+api_probe";
 
   const accessToken = entry.key!;

@@ -90,6 +90,7 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
     version: bin.version,
     auth: "missing",
     plan: null,
+    subscription: null,
     account: null,
     windows: [],
     source: "none",
@@ -105,6 +106,15 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
 
   const auth = readCursorAuth();
   base.plan = auth.membership ? titleCase(auth.membership) : null;
+  if (base.plan) {
+    const status =
+      auth.subscriptionStatus && auth.subscriptionStatus !== "active"
+        ? ` · ${auth.subscriptionStatus}`
+        : auth.subscriptionStatus === "active"
+          ? " · active"
+          : "";
+    base.subscription = `Cursor ${base.plan}${status}`;
+  }
   base.account = auth.email;
 
   if (!auth.accessToken) {
