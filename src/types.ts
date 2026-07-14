@@ -19,7 +19,10 @@ export interface ProviderSnapshot {
   binary: string | null;
   version: string | null;
   auth: AuthState;
+  /** Short plan label for titles (e.g. Max 20x, Pro, Ultra) */
   plan: string | null;
+  /** Full subscription line for display */
+  subscription: string | null;
   account: string | null;
   windows: Meter[];
   source: string;

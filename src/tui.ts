@@ -14,7 +14,7 @@ const BG_DIM = `${ESC}[48;5;236m`;
 
 const REFRESH_MS = 45_000;
 const CARD_INNER = 34;
-const CARD_H = 8;
+const CARD_H = 10;
 
 type Level = "blue" | "green" | "yellow" | "red" | "unknown";
 
@@ -86,10 +86,18 @@ function boxLines(title: string, body: string[], inner: number): string[] {
 
 function providerCard(p: ProviderSnapshot, inner: number): string[] {
   const st = statusTag(p);
-  const plan = p.plan ? ` · ${p.plan}` : "";
-  const title = `${p.displayName}${plan}`.slice(0, inner - 4);
+  const sub = p.subscription || (p.plan ? `${p.displayName} ${p.plan}` : null);
+  const title = p.displayName.slice(0, inner - 4);
   const lines: string[] = [];
   lines.push(`${st.color}${BOLD}${st.label}${RESET}`);
+  if (sub) {
+    lines.push(`${CYAN}sub${RESET}  ${sub}`);
+  } else {
+    lines.push(`${DIM}sub  unknown${RESET}`);
+  }
+  if (p.account) {
+    lines.push(`${DIM}${p.account}${RESET}`);
+  }
 
   if (!p.installed) {
     lines.push(`${DIM}not installed${RESET}`);
@@ -100,7 +108,7 @@ function providerCard(p: ProviderSnapshot, inner: number): string[] {
     lines.push(`${DIM}no live meters${RESET}`);
     if (p.hint) lines.push(`${DIM}${p.hint}${RESET}`);
   } else {
-    for (const m of p.windows.slice(0, 4)) {
+    for (const m of p.windows.slice(0, 3)) {
       lines.push(meterRow(m, inner - 2));
     }
     if (p.hint && p.windows.some((w) => (w.usedPercent ?? 0) >= 90)) {

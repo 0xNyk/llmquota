@@ -52,7 +52,10 @@ export function pickFighter(providers: ProviderSnapshot[]): RosterReport["pick"]
   const best = ready[0]!;
   const used = best.score != null ? `${Math.round(best.score)}% used` : "headroom unknown";
   const win = best.windows[0];
-  const detail = win?.label ? `${win.label} ${used}` : used;
+  const sub = best.subscription || best.plan;
+  const detail = win?.label
+    ? `${sub ? `${sub} · ` : ""}${win.label} ${used}`
+    : `${sub ? `${sub} · ` : ""}${used}`;
   return {
     id: best.id,
     line: `→ fight with ${best.displayName} (${detail})`,

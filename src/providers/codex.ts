@@ -69,6 +69,7 @@ export async function collectCodex(): Promise<ProviderSnapshot> {
     version: bin.version,
     auth: "missing",
     plan: null,
+    subscription: null,
     account: null,
     windows: [],
     source: "none",
@@ -123,6 +124,8 @@ export async function collectCodex(): Promise<ProviderSnapshot> {
 
   const data = res.json as CodexWham;
   base.plan = data.plan_type ? titleCase(data.plan_type) : null;
+  const chatgptPlan = chatgptPlanFromIdToken(auth.tokens?.id_token);
+  base.subscription = codexSubscription(base.plan, chatgptPlan);
   base.account = data.email || null;
   base.source = "wham_usage";
 
@@ -166,4 +169,36 @@ export async function collectCodex(): Promise<ProviderSnapshot> {
 
 function titleCase(s: string): string {
   return s.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const part = token.split(".")[1];
+    if (!part) return null;
+    const padded = part + "=".repeat((4 - (part.length % 4)) % 4);
+    return JSON.parse(Buffer.from(padded, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    return null;
+  }
+}
+
+function chatgptPlanFromIdToken(idToken: string | undefined): string | null {
+  if (!idToken) return null;
+  const claims = decodeJwtPayload(idToken);
+  const auth = claims?.["https://api.openai.com/auth"];
+  if (!auth || typeof auth !== "object") return null;
+  const plan = (auth as { chatgpt_plan_type?: string }).chatgpt_plan_type;
+  return plan ? titleCase(plan) : null;
+}
+
+function codexSubscription(codexPlan: string | null, chatgptPlan: string | null): string | null {
+  if (codexPlan && chatgptPlan && chatgptPlan.toLowerCase() !== codexPlan.toLowerCase()) {
+    return `Codex ${codexPlan} · ChatGPT ${chatgptPlan}`;
+  }
+  if (codexPlan) return `Codex ${codexPlan}`;
+  if (chatgptPlan) return `ChatGPT ${chatgptPlan}`;
+  return null;
 }

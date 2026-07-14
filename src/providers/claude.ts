@@ -105,10 +105,20 @@ function planLabel(creds: ClaudeCreds | null): string | null {
   const tier = creds.rateLimitTier || "";
   if (tier.includes("max_20x")) return "Max 20x";
   if (tier.includes("max_5x")) return "Max 5x";
-  if (tier.includes("pro")) return "Pro";
+  if (tier.includes("pro") || tier.includes("claude_pro")) return "Pro";
   if (creds.subscriptionType === "max") return "Max";
   if (creds.subscriptionType === "pro") return "Pro";
+  if (creds.subscriptionType === "free") return "Free";
   return creds.subscriptionType || null;
+}
+
+function subscriptionLabel(creds: ClaudeCreds | null): string | null {
+  const plan = planLabel(creds);
+  if (!plan) return null;
+  if (plan.startsWith("Max")) return `Claude ${plan}`;
+  if (plan === "Pro") return "Claude Pro";
+  if (plan === "Free") return "Claude Free";
+  return `Claude ${plan}`;
 }
 
 function meterFrom(
@@ -140,6 +150,7 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
     version: bin.version,
     auth: "missing",
     plan: null,
+    subscription: null,
     account: null,
     windows: [],
     source: "none",
@@ -162,12 +173,14 @@ export async function collectClaude(opts: { refresh?: boolean } = {}): Promise<P
   if (creds.expiresAt && creds.expiresAt < Date.now()) {
     base.auth = "expired";
     base.plan = planLabel(creds);
+    base.subscription = subscriptionLabel(creds);
     base.hint = "Token expired — open `claude` and re-auth.";
     return base;
   }
 
   base.auth = "ok";
   base.plan = planLabel(creds);
+  base.subscription = subscriptionLabel(creds);
 
   const cacheKey = "claude-usage";
   if (!opts.refresh) {
