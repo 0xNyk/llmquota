@@ -4,8 +4,26 @@
   "description": "Fun terminal roster for Claude / Codex / Cursor / Grok rate limits",
   "type": "module",
   "bin": {
-    "llmquota": "./dist/index.js"
+    "llmquota": "./llmquota"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xNyk/llmquota.git"
+  },
+  "bugs": {
+    "url": "https://github.com/0xNyk/llmquota/issues"
+  },
+  "homepage": "https://github.com/0xNyk/llmquota#readme",
+  "keywords": [
+    "claude",
+    "codex",
+    "cursor",
+    "grok",
+    "rate-limit",
+    "quota",
+    "cli"
+  ],
+  "author": "0xNyk",
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
