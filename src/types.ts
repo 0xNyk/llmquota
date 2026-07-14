@@ -46,4 +46,6 @@ export interface CliOptions {
   who: boolean;
   doctor: boolean;
   refresh: boolean;
+  tui?: boolean;
+  once?: boolean;
 }
