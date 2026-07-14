@@ -27,11 +27,13 @@ import {
 } from "./tui-ansi.js";
 import {
   availability,
+  CARD_MIN_BODY,
   countdownLine,
   distinctResetFacts,
   formatCountdown,
+  isCooldown,
   levelColor,
-  paceFraction,
+  meterWaveIntensity,
   soonestReset,
   statusInfo,
   type Avail,
@@ -44,7 +46,7 @@ import { meterAffectsAvailability } from "./util.js";
 export type CardDensity = "tight" | "normal" | "roomy";
 
 export interface CardSlot {
-  kind: "status" | "who" | "ref" | "meter" | "fact" | "when" | "hint" | "error";
+  kind: "status" | "who" | "selection" | "ref" | "meter" | "fact" | "when" | "hint" | "error";
   /** Lower = pack first. Sticky `when` is always last. */
   priority: number;
   line: string;
@@ -56,6 +58,20 @@ export function cardDensity(bodyH: number): CardDensity {
   if (bodyH <= 5) return "tight";
   if (bodyH <= 8) return "normal";
   return "roomy";
+}
+
+export const CARD_MAX_BODY = 10;
+
+/** Natural card height before the row allocator fits cards to the terminal. */
+export function preferredCardBodyH(
+  p: ProviderSnapshot,
+  contentW: number,
+  focused: boolean,
+  tick: number,
+  checkedAt?: string | null,
+): number {
+  const slots = buildCardSlots(p, contentW, CARD_MAX_BODY, focused, tick, checkedAt);
+  return Math.max(CARD_MIN_BODY, Math.min(CARD_MAX_BODY, slots.length));
 }
 
 export function isSpendDetail(detail: string): boolean {
@@ -96,6 +112,11 @@ export function cardTitle(
   avail: Avail,
   sec: number | null,
 ): string {
+  if (isCooldown(p)) {
+    return sec != null
+      ? `${p.displayName} · COOLDOWN · ${formatCountdown(sec)}`
+      : `${p.displayName} · COOLDOWN`;
+  }
   if (avail === "ready") return p.displayName;
   if (sec != null) return `${p.displayName} · ${formatCountdown(sec)}`;
   return p.displayName;
@@ -113,7 +134,9 @@ export function statusSlot(
 ): CardSlot {
   const st = statusInfo(p, tick);
   let badge: string;
-  if (avail === "ready") {
+  if (isCooldown(p)) {
+    badge = `${RED}${BOLD}× COOLDOWN${RESET}`;
+  } else if (avail === "ready") {
     badge = `${GREEN}${BOLD}${st.short}${RESET} ${GREEN}ready${RESET}`;
   } else if (avail === "soon") {
     badge = `${YELLOW}${BOLD}◌${RESET} ${YELLOW}soon${RESET}`;
@@ -149,7 +172,7 @@ export function selectionSlot(p: ProviderSnapshot, contentW: number): CardSlot |
   const selection = [p.activeProvider, model].filter(Boolean).join(" · ");
   if (!selection) return null;
   return {
-    kind: "fact",
+    kind: "selection",
     priority: 25,
     line: `${DIM}${selection.slice(0, contentW)}${RESET}`,
   };
@@ -188,7 +211,7 @@ export function refSlot(
 
 /** Meter row: label · wave · NN% — no per-row clocks. */
 export function meterSlot(m: Meter, contentW: number, tick: number): CardSlot {
-  const labelW = Math.min(5, Math.max(3, Math.floor(contentW * 0.1)));
+  const labelW = Math.min(8, Math.max(7, Math.floor(contentW * 0.14)));
   const rightW = 4; // "100%"
   const barW = Math.max(10, contentW - labelW - rightW - 2);
   const label = windowName(m).slice(0, labelW).padEnd(labelW);
@@ -208,7 +231,7 @@ export function meterSlot(m: Meter, contentW: number, tick: number): CardSlot {
   const right = `${used}%`.padStart(rightW);
   const line =
     `${FG_SOFT}${label}${RESET} ` +
-    `${usageWave(seed, m.usedPercent, barW, tick, paceFraction(m))} ` +
+    `${usageWave(seed, m.usedPercent, barW, tick, meterWaveIntensity(m))} ` +
     `${levelColor(usageLevel(m.usedPercent))}${BOLD}${right}${RESET}`;
 
   // Hotter meters pack first (lower priority number).
@@ -220,7 +243,8 @@ export function meterSlot(m: Meter, contentW: number, tick: number): CardSlot {
 }
 
 export function spendSlot(windows: Meter[], contentW: number): CardSlot | null {
-  for (const m of windows) {
+  const preferred = windows.find((m) => m.name === "nous_purchased");
+  for (const m of preferred ? [preferred, ...windows.filter((w) => w !== preferred)] : windows) {
     const d = m.detail?.trim();
     if (!d || !isSpendDetail(d)) continue;
     return {
@@ -306,8 +330,8 @@ export function packCardSlots(
   const flexRoom = Math.max(0, bodyH - reserved);
   const chosenFlex = flex.slice(0, flexRoom);
 
-  // Preserve reading order: status/error → who/ref → meters (by heat) → fact → hint → when
-  const order = ["status", "error", "who", "ref", "meter", "fact", "hint", "when"] as const;
+  // Preserve reading order: identity → active route → quota → supporting facts → reset.
+  const order = ["status", "error", "who", "selection", "ref", "meter", "fact", "hint", "when"] as const;
   const rank = (k: string) => {
     const i = order.indexOf(k as (typeof order)[number]);
     return i < 0 ? 99 : i;

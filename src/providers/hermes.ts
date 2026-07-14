@@ -12,6 +12,8 @@ import {
   home,
   nonEmpty,
   readCache,
+  readCacheEntry,
+  readLatestCacheEntry,
   writeCache,
   titleCase,
 } from "../util.js";
@@ -560,6 +562,51 @@ function paidAccess(payload: NousAccountPayload): NousPaidAccess | null {
   return null;
 }
 
+function compactAge(ageMs: number): string {
+  const minutes = Math.max(0, Math.floor(ageMs / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+export function nousPurchasedCreditMeter(
+  payload: NousAccountPayload,
+  ageMs: number | null = null,
+): Meter | null {
+  const access = paidAccess(payload);
+  const purchased = access?.purchased_credits_remaining ?? payload.purchased_credits_remaining;
+  if (typeof purchased !== "number" || !Number.isFinite(purchased) || purchased < 0) return null;
+  const freshness = ageMs == null ? "live" : `cached ${compactAge(ageMs)} ago`;
+  return {
+    name: "nous_purchased",
+    label: "Nous +",
+    usedPercent: null,
+    resetsAt: null,
+    availableIn: null,
+    windowSeconds: null,
+    detail: `Nous paid credits ${usd(purchased)} remaining · ${freshness}`,
+    affectsAvailability: false,
+  };
+}
+
+function cachedNousPurchasedCreditMeter(): Meter | null {
+  const maxAgeMs = 7 * 24 * 3600_000;
+  let newest: { meter: Meter; cachedAt: number } | null = null;
+  for (const slot of discoverConfiguredNousSlots()) {
+    const hit = readCacheEntry<NousAccountPayload>(`hermes-nous-${slot.profileId}`, maxAgeMs);
+    if (!hit || !isNousAccountPayload(hit.data)) continue;
+    const meter = nousPurchasedCreditMeter(hit.data, hit.ageMs);
+    if (meter && (!newest || hit.cachedAt > newest.cachedAt)) newest = { meter, cachedAt: hit.cachedAt };
+  }
+  const latest = readLatestCacheEntry<NousAccountPayload>("hermes-nous-", maxAgeMs);
+  if (latest && isNousAccountPayload(latest.data) && (!newest || latest.cachedAt > newest.cachedAt)) {
+    const meter = nousPurchasedCreditMeter(latest.data, latest.ageMs);
+    if (meter) newest = { meter, cachedAt: latest.cachedAt };
+  }
+  return newest?.meter ?? null;
+}
+
 export function hermesPaidAccessAllowed(payload: NousAccountPayload): boolean | null {
   const raw = payload.paid_service_access;
   if (typeof raw === "boolean") return raw;
@@ -608,7 +655,7 @@ export function buildHermesMeters(payload: NousAccountPayload): Meter[] {
     const purchasedLabel = usd(purchased);
     const components = [
       subscription ? `subscription ${subscription}` : null,
-      purchasedLabel && purchased !== total ? `purchased ${purchasedLabel}` : null,
+      purchasedLabel && purchased !== total ? `paid ${purchasedLabel} remaining` : null,
     ].filter(Boolean);
     meters.push({
       name: "topup",
@@ -617,7 +664,9 @@ export function buildHermesMeters(payload: NousAccountPayload): Meter[] {
       resetsAt: null,
       availableIn: null,
       windowSeconds: null,
-      detail: `${usd(total)} usable${components.length ? ` (${components.join(" · ")})` : ""}`,
+      detail: purchased === total && purchasedLabel
+        ? `Nous paid credits ${purchasedLabel} remaining · live`
+        : `${usd(total)} usable${components.length ? ` (${components.join(" · ")})` : ""}`,
       affectsAvailability: false,
     });
   }
@@ -916,6 +965,8 @@ async function collectHermesOpenAiCodex(
     base.hint = "Install Hermes Agent, then run `hermes model`.";
     return base;
   }
+  const nousCredit = cachedNousPurchasedCreditMeter();
+  if (nousCredit) base.windows.push(nousCredit);
 
   const provider = readHermesActiveSelection(hermesHome()).provider || "openai-codex";
   const token = configuredProviderToken(provider);
@@ -961,7 +1012,10 @@ async function collectHermesOpenAiCodex(
   base.plan = data.plan_type ? titleCase(data.plan_type) : null;
   base.subscription = base.plan ? `OpenAI Codex ${base.plan}` : "OpenAI Codex";
   base.account = data.email || null;
-  base.windows = collectCodexUsageWindows(data, Date.now(), base.activeModel);
+  base.windows = [
+    ...collectCodexUsageWindows(data, Date.now(), base.activeModel),
+    ...(nousCredit ? [nousCredit] : []),
+  ];
   base.score = codexUsageScore(data, base.windows, base.activeModel);
   base.requestAvailability = codexRequestAvailability(data, base.activeModel, base.score);
   base.hint = codexUsageHint(data, base.windows);

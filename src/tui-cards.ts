@@ -3,6 +3,7 @@ import {
   BG,
   BG_HERO,
   BG_HOVER,
+  BG_COOLDOWN,
   BG_PANEL,
   BG_READY,
   BG_SOON,
@@ -29,6 +30,7 @@ import {
   CARD_MIN_BODY,
   CARD_MIN_INNER,
   GAP,
+  isCooldown,
   MARGIN,
   statusInfo,
 } from "./tui-model.js";
@@ -42,6 +44,29 @@ export interface Layout {
   gap: number;
   bodyH: number;
   cardRows: number;
+}
+
+/** Fit natural row heights into the visible card-body budget. */
+export function allocateRowBodyHeights(desired: number[], budget: number): number[] {
+  const heights = desired.map((h) => Math.max(CARD_MIN_BODY, Math.min(10, Math.floor(h))));
+  const floor = CARD_MIN_BODY * heights.length;
+  let excess = Math.max(0, heights.reduce((sum, h) => sum + h, 0) - Math.max(floor, budget));
+  while (excess > 0) {
+    let tallest = -1;
+    for (let i = 0; i < heights.length; i++) {
+      if (heights[i]! > CARD_MIN_BODY && (tallest < 0 || heights[i]! > heights[tallest]!)) tallest = i;
+    }
+    if (tallest < 0) break;
+    heights[tallest]!--;
+    excess--;
+  }
+  return heights;
+}
+
+/** Center a short final row within the full grid instead of leaving a hard-right hole. */
+export function partialRowOffset(itemCount: number, columns: number, cardW: number, gap: number): number {
+  if (itemCount >= columns) return 0;
+  return Math.floor(((columns - itemCount) * (cardW + gap)) / 2);
 }
 
 export function refPayload(p: ProviderSnapshot): string | null {
@@ -83,7 +108,7 @@ export function boxCard(
   });
 }
 
-function cardChrome(avail: ReturnType<typeof availability>, focused: boolean, hovered: boolean) {
+function cardChrome(avail: ReturnType<typeof availability>, cooldown: boolean, focused: boolean, hovered: boolean) {
   const accent = focused
     ? CYAN
     : hovered
@@ -100,6 +125,8 @@ function cardChrome(avail: ReturnType<typeof availability>, focused: boolean, ho
     ? BG_HERO
     : hovered
       ? BG_HOVER
+      : cooldown
+        ? BG_COOLDOWN
       : avail === "ready"
         ? BG_READY
         : avail === "soon"
@@ -124,7 +151,7 @@ export function fighterCard(
 ): { lines: string[]; refBodyRow: number | null } {
   const contentW = inner - 2;
   const { avail, title } = titleClock(p, checkedAt);
-  const { accent, panelBg } = cardChrome(avail, focused, hovered);
+  const { accent, panelBg } = cardChrome(avail, isCooldown(p), focused, hovered);
 
   const slots = buildCardSlots(p, contentW, bodyH, focused, tick, checkedAt);
   const packed = packCardSlots(slots, bodyH);

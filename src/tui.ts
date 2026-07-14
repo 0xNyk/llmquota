@@ -63,7 +63,7 @@ function leaveAlt(): void {
 }
 
 export async function runTui(
-  opts: { refresh?: boolean; noMouse?: boolean } = {},
+  opts: { refresh?: boolean; noMouse?: boolean; anon?: boolean } = {},
 ): Promise<void> {
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
     throw new Error("TUI needs an interactive terminal (stdout + stdin TTY)");
@@ -90,6 +90,7 @@ export async function runTui(
   let hoverKind: "focus" | "copy" | null = null;
   let showHelp = false;
   let showBus = false;
+  let anon = Boolean(opts.anon);
   let shoutDraft: string | null = null;
   let pressHit: HitRegion | null = null;
   let lastClick: { key: string; at: number } | null = null;
@@ -174,6 +175,7 @@ export async function runTui(
       shoutDraft,
       tick,
       nextRefreshIn,
+      anon,
     });
     lastHits = framed.hits;
     lastScreen = writeScreen(framed.screen, lastScreen);
@@ -384,6 +386,12 @@ export async function runTui(
     }
     if (key === "b" || key === "B") {
       showBus = !showBus;
+      redraw();
+      return;
+    }
+    if (key === "a" || key === "A") {
+      anon = !anon;
+      showToast(anon ? "anonymous mode on" : "anonymous mode off");
       redraw();
       return;
     }

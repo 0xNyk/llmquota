@@ -18,7 +18,7 @@ export { usageLevel, type UsageLevel };
 
 export const REFRESH_MS = 45_000;
 export const TICK_MS = 500;
-export const TICK_LOADING_MS = 120;
+export const TICK_LOADING_MS = 250;
 export const CARD_MIN_INNER = 28;
 export const CARD_MIN_BODY = 5;
 export const GAP = 2;
@@ -250,56 +250,56 @@ export function availability(p: ProviderSnapshot): Avail {
   return st.kind === "auth" ? "auth" : st.kind === "missing" ? "missing" : "tired";
 }
 
+/** True only when current evidence says requests are blocked by quota. */
+export function isCooldown(p: ProviderSnapshot): boolean {
+  if (!p.installed || p.auth !== "ok") return false;
+  return statusInfo(p, 0).kind === "ko";
+}
+
 export function levelColor(lvl: UsageLevel): string {
   return { blue: BLUE, green: GREEN, yellow: YELLOW, red: RED, unknown: DIM }[lvl];
 }
 
-/**
- * Usage wave meter — fill width + amplitude track %; phase animates.
- * Pace marker (│) = time elapsed in the billing window when known.
- * Smoother sine (less LCG noise) so it reads as a wave, not a histogram.
- */
+/** Stable quota track: heavy fill = used, thin track = remaining. */
 export function usageWave(
-  seed: string,
+  _seed: string,
   used: number | null,
   width: number,
   phase = 0,
-  paceFrac: number | null = null,
+  intensity = 0,
 ): string {
   const w = Math.max(6, width);
-  if (used == null) return `${FG_MUTE}${"┈".repeat(w)}${RESET}`;
+  if (used == null) return `${FG_MUTE}${"─".repeat(w)}${RESET}`;
 
   const pct = Math.max(0, Math.min(100, used));
-  const peak = Math.max(0.16, pct / 100);
   const filled = Math.round((pct / 100) * w);
-  const paceCol =
-    paceFrac != null && Number.isFinite(paceFrac)
-      ? Math.max(0, Math.min(w - 1, Math.round(paceFrac * (w - 1))))
-      : -1;
-
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  const drift = (h % 628) / 100;
-
   const fill = levelColor(usageLevel(used));
-  let out = "";
-  for (let i = 0; i < w; i++) {
-    const t = i / Math.max(1, w - 1);
-    // Primary + harmonic for a readable wave shape
-    const wave =
-      0.62 +
-      0.28 * Math.sin(t * Math.PI * 2.2 + phase * 0.5 + drift) +
-      0.1 * Math.sin(t * Math.PI * 4.4 + phase * 0.35);
-    const inFill = i < filled || (filled === 0 && pct > 0 && i === 0);
-    const v = inFill
-      ? Math.max(0.2, Math.min(1, peak * wave))
-      : Math.max(0.04, Math.min(0.2, 0.12 * wave));
-    const ch = SPARK[Math.min(SPARK.length - 1, Math.floor(v * (SPARK.length - 1)))]!;
-    if (i === paceCol) out += `${WHITE}│${RESET}`;
-    else if (inFill) out += `${fill}${ch}${RESET}`;
-    else out += `${FG_MUTE}${ch}${RESET}`;
+  const heat = Math.max(0, Math.min(1, intensity));
+  let usedGlyphs = "";
+  for (let i = 0; i < filled; i++) {
+    if (heat <= 0.05) {
+      usedGlyphs += "━";
+      continue;
+    }
+    const wave = 0.5 + 0.5 * Math.sin(i * 0.48 + phase * 0.65 + (_seed.length % 7));
+    const level = Math.max(0, Math.min(7, Math.round((0.18 + wave * 0.82) * heat * 7)));
+    usedGlyphs += SPARK[level]!;
   }
-  return out;
+  const usedTrack = filled > 0 ? `${fill}${usedGlyphs}${RESET}` : "";
+  const remainingTrack = filled < w ? `${FG_MUTE}${"─".repeat(w - filled)}${RESET}` : "";
+  return usedTrack + remainingTrack;
+}
+
+/** Animation strength: usage pressure before limit, remaining cooldown after exhaustion. */
+export function meterWaveIntensity(m: Meter): number {
+  if (!meterAffectsAvailability(m) || m.usedPercent == null) return 0;
+  if (m.usedPercent < 70) return 0;
+  if (m.usedPercent < 100) return Math.min(1, (m.usedPercent - 70) / 30);
+  if (m.windowSeconds && m.resetsAt) {
+    const remaining = Math.max(0, Date.parse(m.resetsAt) - Date.now()) / 1000;
+    if (Number.isFinite(remaining)) return Math.min(1, remaining / m.windowSeconds);
+  }
+  return 1;
 }
 
 export function paceFraction(m: Meter): number | null {

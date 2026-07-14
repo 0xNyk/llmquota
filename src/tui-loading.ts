@@ -16,7 +16,6 @@ import {
   WHITE,
   YELLOW,
 } from "./tui-ansi.js";
-import { ambientWave } from "./tui-model.js";
 
 export interface LoadProgress {
   scanned: DetectedCli[];
@@ -36,17 +35,15 @@ export function spinnerGlyph(tick: number): string {
 export function progressBar(done: number, total: number, width: number, tick: number): string {
   const t = Math.max(1, total);
   const filled = Math.max(0, Math.min(width, Math.round((done / t) * width)));
-  const pulse = tick % 2 === 0 ? "▓" : "▒";
-  let out = "";
-  for (let i = 0; i < width; i++) {
-    if (i < filled) out += `${GREEN}█${RESET}`;
-    else if (i === filled && done < t) out += `${YELLOW}${pulse}${RESET}`;
-    else out += `${FG_MUTE}░${RESET}`;
-  }
-  return out;
+  const pulse = done < t ? `${YELLOW}${tick % 2 === 0 ? "◆" : "◇"}${RESET}` : "";
+  const complete = filled > 0 ? `${GREEN}${"━".repeat(filled)}${RESET}` : "";
+  const rest = Math.max(0, width - filled - (done < t ? 1 : 0));
+  return complete + pulse + (rest ? `${FG_MUTE}${"─".repeat(rest)}${RESET}` : "");
 }
 
 function activeProbeLabel(progress: LoadProgress): string {
+  const pending = METERED_IDS.filter((id) => progress.pending.has(id) && !progress.done.has(id));
+  if (pending.length > 1) return `${pending.length} checking`;
   for (const id of METERED_IDS) {
     if (progress.errors.has(id)) continue;
     if (progress.done.has(id)) continue;
@@ -71,6 +68,16 @@ function probeLamps(progress: LoadProgress, tick: number): string {
     } else bits.push(`${DIM}·${short}${RESET}`);
   }
   return bits.join(" ");
+}
+
+function probeRows(progress: LoadProgress, tick: number): string[] {
+  return METERED_IDS.map((id) => {
+    const name = progress.scanned.find((c) => c.id === id)?.displayName || id[0]!.toUpperCase() + id.slice(1);
+    if (progress.errors.has(id)) return `${RED}×${RESET} ${WHITE}${name.padEnd(8)}${RESET} ${DIM}probe failed${RESET}`;
+    if (progress.done.has(id)) return `${GREEN}●${RESET} ${WHITE}${name.padEnd(8)}${RESET} ${GREEN}ready${RESET}`;
+    const pulse = tick % 2 === 0 ? "◆" : "◇";
+    return `${YELLOW}${pulse}${RESET} ${WHITE}${name.padEnd(8)}${RESET} ${DIM}checking${RESET}`;
+  });
 }
 
 /** One row: smoke gutters + centered content (single center pass). */
@@ -103,7 +110,7 @@ function rowWithSmoke(
   return `${line}${RESET}`;
 }
 
-/** Centered cold-boot — brand + waves + smoke + probe lamps. */
+/** Centered cold boot with one explicit state row per quota source. */
 export function loadingScreen(
   cols: number,
   rows: number,
@@ -119,22 +126,17 @@ export function loadingScreen(
   const elapsed = ((Date.now() - progress.startedAt) / 1000).toFixed(1);
   const probe = activeProbeLabel(progress);
 
-  const waveW = Math.min(48, Math.max(24, cols - 16));
-  const barW = Math.min(28, Math.max(14, Math.floor(waveW * 0.6)));
+  const barW = Math.min(34, Math.max(16, cols - 28));
 
   const block: string[] = [
     `${BOLD}${WHITE}llmquota${RESET}${FG_MUTE} arena${RESET}`,
     "",
-    `${YELLOW}${spin}${RESET} ${DIM}reading the ring${RESET}`,
+    `${YELLOW}${spin}${RESET} ${DIM}checking quota sources${RESET}`,
     "",
-    ambientWave("boot:a", waveW, tick, DIM),
-    ambientWave("boot:b", waveW, tick, CYAN),
-    ambientWave("boot:c", waveW, tick, DIM),
-    "",
-    probeLamps(progress, tick),
+    ...probeRows(progress, tick),
     "",
     `${progressBar(doneN, total, barW, tick)}  ${DIM}${doneN}/${total}${RESET}`,
-    `${DIM}${probe}${RESET}${probe === "ready" ? "" : `${DIM}…${RESET}`}  ${FG_MUTE}${elapsed}s${RESET}`,
+    `${DIM}${probe}${RESET}  ${FG_MUTE}${elapsed}s${RESET}`,
   ];
 
   if (error) {

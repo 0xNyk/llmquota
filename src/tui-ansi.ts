@@ -14,6 +14,7 @@ export const BG_PANEL = `${ESC}[48;5;235m`;
 export const BG_HERO = `${ESC}[48;5;236m`;
 export const BG_READY = `${ESC}[48;5;236m`;
 export const BG_SOON = `${ESC}[48;5;237m`;
+export const BG_COOLDOWN = `${ESC}[48;5;52m`;
 export const BG_HOVER = `${ESC}[48;5;238m`;
 export const FG_GRIT = `${ESC}[38;5;236m`;
 export const FG_MUTE = `${ESC}[38;5;240m`;
@@ -130,7 +131,7 @@ export function paintLine(
 
 export function padPlain(s: string, width: number): string {
   const len = vlen(s);
-  if (len >= width) return truncateVisible(s, Math.max(0, width - 1)) + "…";
+  if (len > width) return truncateVisible(s, Math.max(0, width - 1)) + "…";
   return s + " ".repeat(width - len);
 }
 
