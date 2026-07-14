@@ -8,6 +8,7 @@ export interface ReferralConfigFile {
   codex?: { code?: string; link?: string };
   cursor?: { code?: string; link?: string };
   grok?: { code?: string; link?: string };
+  hermes?: { code?: string; link?: string };
 }
 
 function configPath(): string {

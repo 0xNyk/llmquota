@@ -75,6 +75,19 @@ export function detectGrok(): DetectedBinary {
   return { path, version: versionOf(path), installed: Boolean(path) };
 }
 
+export function detectHermes(): DetectedBinary {
+  const path = resolveBinary([
+    join(homedir(), ".local/bin/hermes"),
+    "hermes",
+  ]);
+  // hermes --version is multi-line; versionOf takes first line
+  let version = versionOf(path, ["--version"]);
+  if (version && version.toLowerCase().startsWith("usage:")) {
+    version = versionOf(path, ["version"]);
+  }
+  return { path, version, installed: Boolean(path) };
+}
+
 export function pathCollisionNotes(): string[] {
   const notes: string[] = [];
   const agents = whichAll("agent");
