@@ -1,15 +1,20 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Meter, ProviderSnapshot } from "../types.js";
+import { baseSnapshot, isExpiredAt } from "../snapshot.js";
 import {
   availableInFromIso,
   fetchJson,
+  hasAnyOwn,
   headroomScore,
+  normalizeIsoTimestamp,
   home,
+  nonEmpty,
   readCache,
   writeCache,
 } from "../util.js";
 import { detectHermes } from "./detect.js";
+import { readHermesActiveSelection } from "../active-selection.js";
 
 const DEFAULT_PORTAL = "https://portal.nousresearch.com";
 const DEFAULT_CLIENT_ID = "hermes-cli";
@@ -81,12 +86,27 @@ interface NousAccountPayload {
   error?: string;
 }
 
+const NOUS_ACCOUNT_FIELDS = [
+  "user",
+  "organisation",
+  "subscription",
+  "purchased_credits_remaining",
+  "paid_service_access",
+  "tool_access",
+] as const;
+
+export function isNousAccountPayload(value: unknown): value is NousAccountPayload {
+  return hasAnyOwn(value, NOUS_ACCOUNT_FIELDS) && value.error == null;
+}
+
 interface HermesNousSlot {
   profileId: string;
   profileLabel: string;
   state: NousProviderState;
   /** Index into credential_pool.nous when from pool; -1 for providers.nous */
   poolIndex: number;
+  /** Auth store that owns this credential (profile or global fallback). */
+  authFilePath: string;
 }
 
 function hermesHome(): string {
@@ -99,8 +119,19 @@ function authPath(): string {
   return join(hermesHome(), "auth.json");
 }
 
-function nonEmpty(s: string | undefined | null): s is string {
-  return typeof s === "string" && s.trim().length > 0;
+/** Match Hermes's profile-mode read fallback without treating arbitrary custom homes as profiles. */
+export function hermesGlobalAuthPath(
+  activeHome = hermesHome(),
+  nativeRoot = home(".hermes"),
+): string | null {
+  const active = resolve(activeHome);
+  const native = resolve(nativeRoot);
+  if (active === native) return null;
+  if (active.startsWith(`${native}${sep}`)) return join(native, "auth.json");
+  if (basename(dirname(active)) === "profiles") {
+    return join(dirname(dirname(active)), "auth.json");
+  }
+  return null;
 }
 
 function portalBase(state: NousProviderState): string {
@@ -114,14 +145,23 @@ function portalBase(state: NousProviderState): string {
 
 function accessExpired(state: NousProviderState): boolean {
   if (!nonEmpty(state.access_token)) return true;
-  if (!state.expires_at) return false;
-  const t = Date.parse(state.expires_at);
-  if (Number.isNaN(t)) return false;
-  return t <= Date.now() + EXPIRY_SKEW_MS;
+  return isExpiredAt(state.expires_at, EXPIRY_SKEW_MS);
 }
 
-function readAuthFile(): HermesAuthFile | null {
-  const path = authPath();
+/** Prefer obtained_at, then expires_at — used to pick winner when pool + providers diverge. */
+function credentialFreshness(state: NousProviderState): number {
+  if (nonEmpty(state.obtained_at)) {
+    const t = Date.parse(state.obtained_at);
+    if (!Number.isNaN(t)) return t;
+  }
+  if (nonEmpty(state.expires_at)) {
+    const t = Date.parse(state.expires_at);
+    if (!Number.isNaN(t)) return t;
+  }
+  return 0;
+}
+
+function readAuthFileAt(path: string): HermesAuthFile | null {
   if (!existsSync(path)) return null;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as HermesAuthFile;
@@ -130,56 +170,217 @@ function readAuthFile(): HermesAuthFile | null {
   }
 }
 
-function writeAuthFile(data: HermesAuthFile): void {
-  writeFileSync(authPath(), `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+function readAuthFile(): HermesAuthFile | null {
+  return readAuthFileAt(authPath());
+}
+
+function writeAuthFileAt(path: string, data: HermesAuthFile): void {
+  writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+}
+
+export function mergeHermesAuthFallback(
+  profile: HermesAuthFile | null,
+  global: HermesAuthFile | null,
+): {
+  auth: HermesAuthFile;
+  providerFromGlobal: boolean;
+  poolFromGlobal: boolean;
+} {
+  const profileProvider = profile?.providers?.nous;
+  const globalProvider = global?.providers?.nous;
+  const profilePool = profile?.credential_pool?.nous;
+  const globalPool = global?.credential_pool?.nous;
+  const providerFromGlobal = profileProvider === undefined && globalProvider !== undefined;
+  const poolFromGlobal = !(profilePool?.length) && Boolean(globalPool?.length);
+  const provider = profileProvider ?? globalProvider;
+  const pool = profilePool?.length ? profilePool : (globalPool || []);
+  return {
+    auth: {
+      version: profile?.version ?? global?.version,
+      active_provider: profile?.active_provider,
+      providers: provider ? { nous: provider } : {},
+      credential_pool: { nous: pool },
+      updated_at: profile?.updated_at ?? global?.updated_at,
+    },
+    providerFromGlobal,
+    poolFromGlobal,
+  };
+}
+
+/**
+ * Adopt newer tokens from providers.nous into a pool slot when Hermes (or another
+ * process) already rotated the single-use refresh token. Mirrors Hermes
+ * `_sync_nous_entry_from_auth_store` — never HTTP-refresh a stale RT (revokes session).
+ */
+function syncSlotFromAuthStore(slot: HermesNousSlot): boolean {
+  if (slot.poolIndex < 0) return false;
+  const auth = readAuthFileAt(slot.authFilePath);
+  const primary = auth?.providers?.nous;
+  if (!primary) return false;
+  if (!nonEmpty(primary.access_token) && !nonEmpty(primary.refresh_token)) return false;
+
+  const sameLabel =
+    nonEmpty(slot.profileLabel) &&
+    slot.profileLabel !== "default" &&
+    primary.label?.trim().toLowerCase() === slot.profileLabel.trim().toLowerCase();
+  const related =
+    sameLabel ||
+    (nonEmpty(slot.state.refresh_token) && slot.state.refresh_token === primary.refresh_token) ||
+    (nonEmpty(slot.state.access_token) && slot.state.access_token === primary.access_token) ||
+    // Single-account setups: only one pool entry + primary
+    (auth?.credential_pool?.nous?.length === 1 && Boolean(primary));
+
+  if (!related) return false;
+  if (credentialFreshness(primary) < credentialFreshness(slot.state)) return false;
+  if (
+    primary.access_token === slot.state.access_token &&
+    primary.refresh_token === slot.state.refresh_token
+  ) {
+    return false;
+  }
+
+  const next: NousProviderState = {
+    ...slot.state,
+    access_token: primary.access_token ?? slot.state.access_token,
+    refresh_token: primary.refresh_token ?? slot.state.refresh_token,
+    expires_at: primary.expires_at ?? slot.state.expires_at,
+    expires_in: primary.expires_in ?? slot.state.expires_in,
+    obtained_at: primary.obtained_at ?? slot.state.obtained_at,
+    token_type: primary.token_type ?? slot.state.token_type,
+    scope: primary.scope ?? slot.state.scope,
+    inference_base_url: primary.inference_base_url ?? slot.state.inference_base_url,
+    agent_key: primary.agent_key ?? slot.state.agent_key,
+    agent_key_expires_at: primary.agent_key_expires_at ?? slot.state.agent_key_expires_at,
+    client_id: primary.client_id ?? slot.state.client_id,
+    portal_base_url: primary.portal_base_url ?? slot.state.portal_base_url,
+  };
+  persistSlot(slot, next);
+  return true;
 }
 
 /** Discover Nous Portal slots from providers.nous + credential_pool.nous. */
-export function discoverNousSlots(auth: HermesAuthFile | null = readAuthFile()): HermesNousSlot[] {
+export function discoverNousSlots(
+  auth: HermesAuthFile | null = readAuthFile(),
+  sourcePaths: { provider: string; pool: string } = {
+    provider: authPath(),
+    pool: authPath(),
+  },
+): HermesNousSlot[] {
   if (!auth) return [];
-  const slots: HermesNousSlot[] = [];
-  const seen = new Set<string>();
+  const candidates: HermesNousSlot[] = [];
+
+  const primary = auth.providers?.nous;
+  if (primary && (nonEmpty(primary.access_token) || nonEmpty(primary.refresh_token))) {
+    candidates.push({
+      profileId: "nous",
+      profileLabel: primary.label || "default",
+      state: primary,
+      poolIndex: -1,
+      authFilePath: sourcePaths.provider,
+    });
+  }
 
   const pool = auth.credential_pool?.nous || [];
   pool.forEach((entry, i) => {
     if (!nonEmpty(entry.access_token) && !nonEmpty(entry.refresh_token)) return;
-    const id = entry.id || `nous-${i}`;
-    if (seen.has(id)) return;
-    seen.add(id);
-    slots.push({
-      profileId: id,
-      profileLabel: entry.label || id,
+    candidates.push({
+      profileId: entry.id || `nous-${i}`,
+      profileLabel: entry.label || entry.id || `nous-${i}`,
       state: entry,
       poolIndex: i,
+      authFilePath: sourcePaths.pool,
     });
   });
 
-  const primary = auth.providers?.nous;
-  if (primary && (nonEmpty(primary.access_token) || nonEmpty(primary.refresh_token))) {
-    const id = "nous";
-    // Prefer pool entries when present; still ensure primary is represented
-    if (!slots.length) {
-      slots.push({
-        profileId: id,
-        profileLabel: primary.label || "default",
-        state: primary,
-        poolIndex: -1,
-      });
-    } else if (!slots.some((s) => s.state.refresh_token === primary.refresh_token)) {
-      slots.unshift({
-        profileId: id,
-        profileLabel: primary.label || "default",
-        state: primary,
-        poolIndex: -1,
-      });
+  // Collapse same account when pool RT lagged behind providers.nous after rotation.
+  const winners: HermesNousSlot[] = [];
+  const used = new Set<number>();
+
+  function sameAccount(a: HermesNousSlot, b: HermesNousSlot): boolean {
+    if (
+      nonEmpty(a.state.refresh_token) &&
+      nonEmpty(b.state.refresh_token) &&
+      a.state.refresh_token === b.state.refresh_token
+    ) {
+      return true;
     }
+    const la = a.profileLabel?.trim().toLowerCase();
+    const lb = b.profileLabel?.trim().toLowerCase();
+    if (la && lb && la !== "default" && la === lb) return true;
+    // Single-account install: providers.nous + one pool row
+    if (
+      candidates.length === 2 &&
+      ((a.poolIndex < 0 && b.poolIndex >= 0) || (b.poolIndex < 0 && a.poolIndex >= 0))
+    ) {
+      return true;
+    }
+    return false;
   }
 
-  return slots;
+  function prefer(a: HermesNousSlot, b: HermesNousSlot): HermesNousSlot {
+    const fa = credentialFreshness(a.state);
+    const fb = credentialFreshness(b.state);
+    if (fa !== fb) return fa > fb ? a : b;
+    // Tie → providers.nous
+    if (a.poolIndex < 0) return a;
+    if (b.poolIndex < 0) return b;
+    return a;
+  }
+
+  for (let i = 0; i < candidates.length; i++) {
+    if (used.has(i)) continue;
+    let best = candidates[i]!;
+    used.add(i);
+    for (let j = i + 1; j < candidates.length; j++) {
+      if (used.has(j)) continue;
+      const other = candidates[j]!;
+      if (!sameAccount(best, other)) continue;
+      used.add(j);
+      best = prefer(best, other);
+    }
+    winners.push(best);
+  }
+
+  winners.sort((a, b) => {
+    if (a.poolIndex < 0 && b.poolIndex >= 0) return -1;
+    if (b.poolIndex < 0 && a.poolIndex >= 0) return 1;
+    return a.poolIndex - b.poolIndex;
+  });
+
+  return winners;
+}
+
+export function discoverNousSlotsWithFallback(
+  profile: HermesAuthFile | null,
+  global: HermesAuthFile | null,
+  profilePath: string,
+  globalPath: string,
+): HermesNousSlot[] {
+  const merged = mergeHermesAuthFallback(profile, global);
+  return discoverNousSlots(merged.auth, {
+    provider: merged.providerFromGlobal ? globalPath : profilePath,
+    pool: merged.poolFromGlobal ? globalPath : profilePath,
+  });
+}
+
+function discoverConfiguredNousSlots(): HermesNousSlot[] {
+  const profilePath = authPath();
+  const globalPath = hermesGlobalAuthPath();
+  if (!globalPath) return discoverNousSlots(readAuthFileAt(profilePath));
+  return discoverNousSlotsWithFallback(
+    readAuthFileAt(profilePath),
+    readAuthFileAt(globalPath),
+    profilePath,
+    globalPath,
+  );
 }
 
 function persistSlot(slot: HermesNousSlot, next: NousProviderState): void {
-  const auth = readAuthFile() || { version: 1, providers: {}, credential_pool: {} };
+  const auth = readAuthFileAt(slot.authFilePath) || {
+    version: 1,
+    providers: {},
+    credential_pool: {},
+  };
   if (!auth.providers) auth.providers = {};
   if (!auth.credential_pool) auth.credential_pool = {};
 
@@ -195,20 +396,31 @@ function persistSlot(slot: HermesNousSlot, next: NousProviderState): void {
       auth.credential_pool.nous = pool;
     }
   } else if (auth.credential_pool.nous?.length) {
-    // Mirror into matching pool entry by refresh/access token when possible
+    // Mirror into matching pool entry by label / prior refresh token
     const pool = auth.credential_pool.nous;
-    const idx = pool.findIndex(
-      (e) =>
-        (nonEmpty(next.refresh_token) && e.refresh_token === slot.state.refresh_token) ||
-        e.label === slot.profileLabel,
-    );
+    const idx = pool.findIndex((e) => {
+      if (
+        nonEmpty(slot.profileLabel) &&
+        slot.profileLabel !== "default" &&
+        e.label?.trim().toLowerCase() === slot.profileLabel.trim().toLowerCase()
+      ) {
+        return true;
+      }
+      if (nonEmpty(slot.state.refresh_token) && e.refresh_token === slot.state.refresh_token) {
+        return true;
+      }
+      return false;
+    });
     if (idx >= 0) {
       pool[idx] = { ...pool[idx], ...next };
+    } else if (pool.length === 1) {
+      // Single-account: keep pool row in lockstep with providers.nous
+      pool[0] = { ...pool[0], ...next };
     }
   }
 
   auth.updated_at = new Date().toISOString();
-  writeAuthFile(auth);
+  writeAuthFileAt(slot.authFilePath, auth);
   slot.state = { ...slot.state, ...next };
 }
 
@@ -291,24 +503,43 @@ function paidAccess(payload: NousAccountPayload): NousPaidAccess | null {
   return null;
 }
 
-function buildMeters(payload: NousAccountPayload): Meter[] {
+export function hermesPaidAccessAllowed(payload: NousAccountPayload): boolean | null {
+  const raw = payload.paid_service_access;
+  if (typeof raw === "boolean") return raw;
+  if (!raw || typeof raw !== "object") return null;
+  if (typeof raw.allowed === "boolean") return raw.allowed;
+  if (typeof raw.paid_access === "boolean") return raw.paid_access;
+  return null;
+}
+
+export function buildHermesMeters(payload: NousAccountPayload): Meter[] {
   const meters: Meter[] = [];
   const sub = payload.subscription;
   const access = paidAccess(payload);
+  const subscriptionRemaining =
+    sub?.credits_remaining ?? access?.subscription_credits_remaining;
 
-  if (sub?.monthly_credits != null && sub.monthly_credits > 0 && sub.credits_remaining != null) {
+  if (
+    typeof sub?.monthly_credits === "number" &&
+    Number.isFinite(sub.monthly_credits) &&
+    sub.monthly_credits > 0 &&
+    typeof subscriptionRemaining === "number" &&
+    Number.isFinite(subscriptionRemaining)
+  ) {
     const cap = sub.monthly_credits;
-    const remaining = sub.credits_remaining;
+    const remaining = subscriptionRemaining;
     const used = Math.max(0, cap - remaining);
-    const usedPercent = Math.max(0, Math.min(100, (used / cap) * 100));
+    const usedPercent = (used / cap) * 100;
+    const rollover = usd(sub.rollover_credits);
+    const resetsAt = normalizeIsoTimestamp(sub.current_period_end);
     meters.push({
       name: "subscription",
       label: "sub",
       usedPercent,
-      resetsAt: sub.current_period_end || null,
-      availableIn: availableInFromIso(sub.current_period_end),
+      resetsAt,
+      availableIn: availableInFromIso(resetsAt),
       windowSeconds: null,
-      detail: `${usd(remaining)} of ${usd(cap)} left`,
+      detail: `${usd(remaining)} of ${usd(cap)} left${rollover ? ` · ${rollover} rollover` : ""}`,
     });
   }
 
@@ -316,47 +547,131 @@ function buildMeters(payload: NousAccountPayload): Meter[] {
     access?.purchased_credits_remaining ?? payload.purchased_credits_remaining ?? null;
   const total = access?.total_usable_credits ?? purchased;
   if (total != null && Number.isFinite(total)) {
+    const subscription = usd(access?.subscription_credits_remaining);
+    const purchasedLabel = usd(purchased);
+    const components = [
+      subscription ? `subscription ${subscription}` : null,
+      purchasedLabel && purchased !== total ? `purchased ${purchasedLabel}` : null,
+    ].filter(Boolean);
     meters.push({
       name: "topup",
       label: "credits",
-      usedPercent: total <= 0 ? 100 : null,
+      usedPercent: null,
       resetsAt: null,
       availableIn: null,
       windowSeconds: null,
-      detail: `${usd(total)} usable${purchased != null && purchased !== total ? ` (top-up ${usd(purchased)})` : ""}`,
+      detail: `${usd(total)} usable${components.length ? ` (${components.join(" · ")})` : ""}`,
+      affectsAvailability: false,
     });
   }
 
   return meters;
 }
 
+export function hermesUsageScore(windows: Meter[], totalUsableCredits: number | null): number | null {
+  const subUsed = windows.find((w) => w.name === "subscription")?.usedPercent;
+  if (subUsed != null && subUsed >= 100 && totalUsableCredits != null && totalUsableCredits > 0) {
+    return null;
+  }
+  if (subUsed != null) return subUsed;
+  return headroomScore(windows.map((w) => w.usedPercent));
+}
+
+export function hermesAvailabilityScore(
+  payload: NousAccountPayload,
+  windows: Meter[],
+  totalUsableCredits: number | null,
+): number | null {
+  return hermesPaidAccessAllowed(payload) === false
+    ? 100
+    : hermesUsageScore(windows, totalUsableCredits);
+}
+
+export function hermesEntitlementHint(payload: NousAccountPayload): string | null {
+  const sub = payload.subscription;
+  const access = paidAccess(payload);
+  const allowed = hermesPaidAccessAllowed(payload);
+  const total = access?.total_usable_credits ?? payload.purchased_credits_remaining ?? null;
+
+  if (allowed === false) {
+    if (access?.reason === "no_usable_credits") {
+      return "Credits depleted — top up at portal.nousresearch.com/billing";
+    }
+    if (access?.reason === "account_missing") {
+      return "Nous Portal account unavailable — re-auth or contact Nous support";
+    }
+    if (access?.has_active_subscription && access.active_subscription_is_paid === false) {
+      return "Current Nous plan has no paid service access — upgrade or add credits";
+    }
+    if (access?.has_active_subscription === false) {
+      return "No active Nous subscription or usable credits — subscribe or top up";
+    }
+    return "Nous paid service access unavailable — check Portal billing";
+  }
+  if (
+    total != null &&
+    Number.isFinite(total) &&
+    total <= 0 &&
+    typeof sub?.credits_remaining === "number" &&
+    Number.isFinite(sub.credits_remaining) &&
+    sub.credits_remaining <= 0
+  ) {
+    return "Credits depleted — top up at portal.nousresearch.com/billing";
+  }
+  if (
+    typeof sub?.credits_remaining === "number" &&
+    Number.isFinite(sub.credits_remaining) &&
+    sub.credits_remaining <= 0 &&
+    total != null &&
+    Number.isFinite(total) &&
+    total > 0
+  ) {
+    return "Subscription grant exhausted — running on top-up credits";
+  }
+  return null;
+}
+
+export function hermesSubscriptionLabels(payload: NousAccountPayload): {
+  plan: string | null;
+  subscription: string;
+} {
+  const sub = payload.subscription;
+  const access = paidAccess(payload);
+  const tier = sub?.tier ?? access?.subscription_tier;
+  const plan = sub?.plan || (tier != null ? `tier ${tier}` : null);
+  if (plan) {
+    const monthlyCharge = usd(sub?.monthly_charge ?? access?.subscription_monthly_charge);
+    return {
+      plan,
+      subscription: `Nous ${plan}${monthlyCharge ? ` · ${monthlyCharge}/mo` : ""}`,
+    };
+  }
+  if (hermesPaidAccessAllowed(payload) === true || access?.active_subscription_is_paid) {
+    return { plan: null, subscription: "Nous Portal (paid)" };
+  }
+  return { plan: null, subscription: "Nous Portal" };
+}
+
 function emptySnapshot(
   bin: ReturnType<typeof detectHermes>,
   slot: HermesNousSlot | null,
 ): ProviderSnapshot {
+  const selection = readHermesActiveSelection(hermesHome());
   const multi = Boolean(slot && slot.profileLabel && slot.profileLabel !== "default");
   const label = slot?.profileLabel || "default";
-  return {
+  return baseSnapshot({
     id: "hermes",
     displayName: multi ? `Hermes · ${label}` : "Hermes",
     installed: bin.installed,
     binary: bin.path,
     version: bin.version,
-    auth: "missing",
-    plan: null,
-    subscription: null,
-    account: null,
-    windows: [],
-    source: "none",
-    error: null,
-    hint: null,
-    referral: null,
-    score: null,
     profileId: slot?.profileId || "default",
     profileLabel: label,
     configDir: hermesHome(),
     active: true,
-  };
+    activeProvider: selection.provider,
+    activeModel: selection.model,
+  });
 }
 
 export async function collectHermesSlot(
@@ -372,6 +687,13 @@ export async function collectHermesSlot(
   }
 
   let state = slot.state;
+
+  // Adopt tokens Hermes already wrote to providers.nous before any HTTP refresh.
+  // Stale pool RTs are single-use — refreshing them revokes the whole session.
+  if (syncSlotFromAuthStore(slot)) {
+    state = slot.state;
+  }
+
   if (accessExpired(state)) {
     const refreshed = await refreshNousAccess(slot);
     if (!refreshed.ok) {
@@ -385,10 +707,31 @@ export async function collectHermesSlot(
 
   base.auth = "ok";
 
+  // Keep credential_pool.nous in lockstep — stale mirrored RTs get revoked by Nous on reuse
+  if (slot.poolIndex < 0) {
+    const auth = readAuthFileAt(slot.authFilePath);
+    const pool = auth?.credential_pool?.nous;
+    if (pool?.length) {
+      const stale = pool.some((e) => {
+        const sameLabel =
+          nonEmpty(slot.profileLabel) &&
+          slot.profileLabel !== "default" &&
+          e.label?.trim().toLowerCase() === slot.profileLabel.trim().toLowerCase();
+        const single = pool.length === 1;
+        if (!sameLabel && !single) return false;
+        return (
+          (nonEmpty(state.refresh_token) && e.refresh_token !== state.refresh_token) ||
+          (nonEmpty(state.access_token) && e.access_token !== state.access_token)
+        );
+      });
+      if (stale) persistSlot(slot, state);
+    }
+  }
+
   const cacheKey = `hermes-nous-${slot.profileId}`;
   if (!opts.refresh) {
     const cached = readCache<NousAccountPayload>(cacheKey, 60_000);
-    if (cached) {
+    if (cached && isNousAccountPayload(cached)) {
       return finalizeAccount(base, cached, "portal_account(cache)");
     }
   }
@@ -419,20 +762,32 @@ export async function collectHermesSlot(
   }
 
   if (!res.ok || !res.json || typeof res.json !== "object") {
-    base.auth = res.status === 401 ? "expired" : "error";
-    base.error = `Nous account fetch failed (HTTP ${res.status})`;
+    if (res.status === 401) base.auth = "expired";
+    else if (res.status !== 0) base.auth = "error";
+    base.error = res.status === 0
+      ? "Nous account unavailable (network error)"
+      : `Nous account fetch failed (HTTP ${res.status})`;
     base.source = "portal_account";
-    base.hint = "Open https://portal.nousresearch.com/billing or run `hermes portal`.";
+    base.hint = res.status === 0
+      ? "Could not reach Nous Portal; retry when online."
+      : "Open https://portal.nousresearch.com/billing or run `hermes portal`.";
     return base;
   }
 
-  const payload = res.json as NousAccountPayload;
-  if (payload.error) {
+  const raw = res.json as Record<string, unknown>;
+  if (typeof raw.error === "string" && raw.error) {
     base.auth = "error";
-    base.error = payload.error;
+    base.error = raw.error;
     base.source = "portal_account";
     return base;
   }
+  if (!isNousAccountPayload(raw)) {
+    base.error = "Nous account response missing recognized fields";
+    base.source = "portal_account";
+    base.hint = "Nous returned an unfamiliar account response; retry or update llmquota.";
+    return base;
+  }
+  const payload = raw;
 
   writeCache(cacheKey, payload);
   return finalizeAccount(base, payload, "portal_account");
@@ -443,18 +798,10 @@ function finalizeAccount(
   payload: NousAccountPayload,
   source: string,
 ): ProviderSnapshot {
-  const sub = payload.subscription;
   const access = paidAccess(payload);
-  const plan = sub?.plan || (sub?.tier != null ? `tier ${sub.tier}` : null);
-  base.plan = plan;
-  if (plan) {
-    const charge = sub?.monthly_charge != null ? ` · $${sub.monthly_charge}/mo` : "";
-    base.subscription = `Nous ${plan}${charge}`;
-  } else if (access?.active_subscription_is_paid) {
-    base.subscription = "Nous Portal (paid)";
-  } else {
-    base.subscription = "Nous Portal";
-  }
+  const labels = hermesSubscriptionLabels(payload);
+  base.plan = labels.plan;
+  base.subscription = labels.subscription;
 
   base.account =
     payload.organisation?.name ||
@@ -462,22 +809,10 @@ function finalizeAccount(
     payload.user?.email ||
     null;
   base.source = source;
-  base.windows = buildMeters(payload);
-  const subUsed = base.windows.find((w) => w.name === "subscription")?.usedPercent;
-  const total = access?.total_usable_credits;
-  if (subUsed != null) {
-    // Soften score when top-up credits remain after grant exhaustion
-    base.score =
-      subUsed >= 99 && total != null && total > 0 ? Math.min(subUsed, 85) : subUsed;
-  } else {
-    base.score = headroomScore(base.windows.map((w) => w.usedPercent));
-    if (base.score == null && total != null && total > 0) base.score = 40;
-  }
-  if (access?.paid_access === false || (total != null && total <= 0 && (sub?.credits_remaining ?? 0) <= 0)) {
-    base.hint = "Credits depleted — top up at portal.nousresearch.com/billing";
-  } else if ((sub?.credits_remaining ?? 1) <= 0 && (total ?? 0) > 0) {
-    base.hint = "Subscription grant exhausted — running on top-up credits";
-  }
+  base.windows = buildHermesMeters(payload);
+  const total = access?.total_usable_credits ?? payload.purchased_credits_remaining ?? null;
+  base.score = hermesAvailabilityScore(payload, base.windows, total);
+  base.hint = hermesEntitlementHint(payload);
 
   return base;
 }
@@ -486,7 +821,7 @@ export async function collectHermesAll(
   opts: { refresh?: boolean } = {},
 ): Promise<ProviderSnapshot[]> {
   const bin = detectHermes();
-  const slots = discoverNousSlots();
+  const slots = discoverConfiguredNousSlots();
   if (!slots.length) {
     const snap = emptySnapshot(bin, null);
     snap.hint = bin.installed

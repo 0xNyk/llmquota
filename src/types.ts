@@ -1,6 +1,17 @@
 export type AuthState = "ok" | "missing" | "expired" | "error";
 
-export type ProviderId = "claude" | "codex" | "cursor" | "grok" | "hermes";
+/** Metered fighters + any catalog-detected CLI id (ollama, gemini, …). */
+export type ProviderId = string;
+
+export const METERED_PROVIDER_IDS = [
+  "claude",
+  "codex",
+  "cursor",
+  "grok",
+  "hermes",
+] as const;
+
+export type MeteredProviderId = (typeof METERED_PROVIDER_IDS)[number];
 
 export interface Meter {
   name: string;
@@ -10,6 +21,8 @@ export interface Meter {
   availableIn: string | null;
   windowSeconds: number | null;
   detail?: string | null;
+  /** False for billing/fact meters that do not prove requests are blocked. */
+  affectsAvailability?: boolean;
 }
 
 export interface ReferralInfo {
@@ -33,6 +46,10 @@ export interface ProviderSnapshot {
   /** Full subscription line for display */
   subscription: string | null;
   account: string | null;
+  /** Runtime/configured inference provider, independent from quota-account source. */
+  activeProvider: string | null;
+  /** Active model when persisted or exposed by the host CLI; unknown stays null. */
+  activeModel: string | null;
   windows: Meter[];
   source: string;
   error: string | null;
@@ -74,4 +91,8 @@ export interface CliOptions {
   once?: boolean;
   refs?: boolean;
   copy?: string | null;
+  /** Disable SGR mouse tracking in the arena TUI */
+  noMouse?: boolean;
+  /** `llmquota scan` — list detected CLIs */
+  scan?: boolean;
 }
