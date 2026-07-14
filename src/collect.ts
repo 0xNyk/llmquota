@@ -103,6 +103,7 @@ export function pickFighter(providers: ProviderSnapshot[]): RosterReport["pick"]
       p.installed &&
       p.auth === "ok" &&
       !(p.error && !p.windows.length) &&
+      (p.requestAvailability === "available" || p.score != null) &&
       (p.score == null || p.score < 95),
   );
 
@@ -111,7 +112,10 @@ export function pickFighter(providers: ProviderSnapshot[]): RosterReport["pick"]
       (p) => p.installed && p.auth === "ok" && p.error && !p.windows.length,
     );
     const knownBlocked = providers.some(
-      (p) => p.installed && p.auth === "ok" && p.score != null && p.score >= 95,
+      (p) =>
+        p.installed &&
+        p.auth === "ok" &&
+        (p.requestAvailability === "blocked" || (p.score != null && p.score >= 95)),
     );
     if (unavailable.length && !knownBlocked) {
       return {

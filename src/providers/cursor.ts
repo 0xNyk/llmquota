@@ -14,6 +14,7 @@ import {
   titleCase,
 } from "../util.js";
 import { detectCursorAgent } from "./detect.js";
+import { readCursorActiveSelection } from "../active-selection.js";
 
 interface CursorAuth {
   accessToken: string | null;
@@ -54,6 +55,7 @@ interface PeriodUsage {
   displayMessage?: string;
   autoModelSelectedDisplayMessage?: string;
   namedModelSelectedDisplayMessage?: string;
+  autoBucketModels?: string[];
 }
 
 const CURSOR_USAGE_FIELDS = [
@@ -64,6 +66,7 @@ const CURSOR_USAGE_FIELDS = [
   "displayMessage",
   "autoModelSelectedDisplayMessage",
   "namedModelSelectedDisplayMessage",
+  "autoBucketModels",
 ] as const;
 
 export function isCursorUsagePayload(value: unknown): value is PeriodUsage {
@@ -158,6 +161,7 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
   const auth = readCursorAuthFromCandidates(cursorStateDbCandidates());
   const installed = cursorInstalled(bin.installed, auth);
   const configDir = auth.dbPath ? dirname(dirname(dirname(auth.dbPath))) : null;
+  const selection = readCursorActiveSelection(home(".cursor"));
   const base = baseSnapshot({
     id: "cursor",
     displayName: "Cursor",
@@ -165,7 +169,8 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
     binary: bin.path,
     version: bin.version,
     configDir,
-    activeProvider: "Cursor",
+    activeProvider: selection.provider,
+    activeModel: selection.model,
   });
 
   if (!installed) {
@@ -238,19 +243,43 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
 
   const data = res.json;
   base.source = "cursor_dashboard";
-  const windows = collectCursorUsageWindows(data);
+  const windows = collectCursorUsageWindows(data, selection.model);
   base.windows = windows;
   base.score = availabilityScore(windows);
+  base.requestAvailability = base.score == null
+    ? "unknown"
+    : base.score >= 100 ? "blocked" : "available";
 
-  const msg =
-    data.displayMessage ||
-    data.namedModelSelectedDisplayMessage ||
-    data.autoModelSelectedDisplayMessage;
+  const msg = cursorUsageHint(data, selection.model);
   if (msg) base.hint = msg;
   return base;
 }
 
-export function collectCursorUsageWindows(data: PeriodUsage): Meter[] {
+function cursorUsesAutoPool(data: PeriodUsage, activeModel: string | null): boolean | null {
+  const normalized = activeModel?.trim().toLowerCase() || null;
+  if (!normalized) return null;
+  return normalized === "auto" ||
+    (data.autoBucketModels || []).some((model) => model.toLowerCase() === normalized);
+}
+
+export function cursorUsageHint(data: PeriodUsage, activeModel: string | null): string | null {
+  const usesAuto = cursorUsesAutoPool(data, activeModel);
+  if (usesAuto === true) {
+    return data.autoModelSelectedDisplayMessage || data.displayMessage || null;
+  }
+  if (usesAuto === false) {
+    return data.namedModelSelectedDisplayMessage || data.displayMessage || null;
+  }
+  return data.displayMessage ||
+    data.namedModelSelectedDisplayMessage ||
+    data.autoModelSelectedDisplayMessage ||
+    null;
+}
+
+export function collectCursorUsageWindows(
+  data: PeriodUsage,
+  activeModel: string | null = null,
+): Meter[] {
   const resetsAt = parseMaybeMs(data.billingCycleEnd);
   const startIso = parseMaybeMs(data.billingCycleStart);
   const pu = data.planUsage || {};
@@ -272,8 +301,11 @@ export function collectCursorUsageWindows(data: PeriodUsage): Meter[] {
         [used ? `${used} used` : null, included ? `${included} plan` : null, bonus ? `${bonus} bonus` : null]
           .filter(Boolean)
           .join(" · ") || null,
+      affectsAvailability: false,
     });
   }
+  const normalizedActiveModel = activeModel?.trim().toLowerCase() || null;
+  const usesAutoPool = cursorUsesAutoPool(data, activeModel) === true;
   if (validPercent(pu.autoPercentUsed)) {
     windows.push({
       name: "auto",
@@ -282,6 +314,7 @@ export function collectCursorUsageWindows(data: PeriodUsage): Meter[] {
       resetsAt,
       availableIn: availableInFromIso(resetsAt),
       windowSeconds: null,
+      affectsAvailability: usesAutoPool,
     });
   }
   if (validPercent(pu.apiPercentUsed)) {
@@ -292,6 +325,7 @@ export function collectCursorUsageWindows(data: PeriodUsage): Meter[] {
       resetsAt,
       availableIn: availableInFromIso(resetsAt),
       windowSeconds: null,
+      affectsAvailability: normalizedActiveModel != null && !usesAutoPool,
     });
   }
   const spend = data.spendLimitUsage;

@@ -88,6 +88,27 @@ export function parseJsonModelConfig(text: string, defaultProvider: string | nul
   }
 }
 
+export function parseCursorModelConfig(text: string): ActiveSelection {
+  try {
+    const raw = JSON.parse(text) as {
+      selectedModel?: { modelId?: unknown };
+      model?: { modelId?: unknown } | unknown;
+    };
+    const selected = raw.selectedModel?.modelId;
+    const configured = raw.model && typeof raw.model === "object"
+      ? (raw.model as { modelId?: unknown }).modelId
+      : raw.model;
+    const model = typeof selected === "string"
+      ? cleanScalar(selected)
+      : typeof configured === "string"
+        ? cleanScalar(configured)
+        : null;
+    return { provider: "Cursor", model };
+  } catch {
+    return { provider: "Cursor", model: null };
+  }
+}
+
 function readText(path: string): string | null {
   try {
     return existsSync(path) ? readFileSync(path, "utf8") : null;
@@ -109,6 +130,11 @@ export function readClaudeActiveSelection(configDir: string): ActiveSelection {
     if (selected.model) return selected;
   }
   return { provider: "Anthropic", model: null };
+}
+
+export function readCursorActiveSelection(cursorHome: string): ActiveSelection {
+  const text = readText(join(cursorHome, "cli-config.json"));
+  return text ? parseCursorModelConfig(text) : { provider: "Cursor", model: null };
 }
 
 function readTail(path: string, maxBytes = 2 * 1024 * 1024): string | null {

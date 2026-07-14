@@ -26,6 +26,7 @@ function snap(partial: Partial<ProviderSnapshot> & Pick<ProviderSnapshot, "id" |
     configDir: null,
     active: false,
     ...partial,
+    requestAvailability: partial.requestAvailability ?? "available",
     activeProvider: partial.activeProvider ?? null,
     activeModel: partial.activeModel ?? null,
   };

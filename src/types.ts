@@ -1,4 +1,5 @@
 export type AuthState = "ok" | "missing" | "expired" | "error";
+export type RequestAvailability = "available" | "blocked" | "unknown";
 
 /** Metered fighters + any catalog-detected CLI id (ollama, gemini, …). */
 export type ProviderId = string;
@@ -54,6 +55,8 @@ export interface ProviderSnapshot {
   source: string;
   error: string | null;
   hint: string | null;
+  /** Explicit request-path state; independent from utilization percentage. */
+  requestAvailability: RequestAvailability;
   /** Lower = more headroom / prefer this fighter */
   score: number | null;
   referral: ReferralInfo | null;

@@ -1,27 +1,29 @@
 {
   "schema_version": 1,
   "kind": "feature",
-  "title": "Detect active providers and models",
+  "title": "Bind quota pools and recover authoritative Grok billing",
   "status": "done",
   "venture_or_app": "llmquota",
-  "summary": "Show authoritative active inference provider and model metadata without conflating Hermes runtime routing with Nous quota-account credentials.",
+  "summary": "Detect authoritative active models and keep model- or surface-specific quota pools from falsely exhausting an unrelated active route.",
   "risks": [
     "Hermes auth.json active_provider can be stale and is not runtime routing truth",
     "Session-level model switches can override configured defaults",
     "Some CLIs do not persist an active model outside a running session",
-    "Unknown active models must remain unknown"
+    "Unknown active models must remain unknown",
+    "A fully used optional model pool must not mark the whole provider exhausted"
   ],
   "files_touch": [
     "src/active-selection.ts",
     "src/types.ts",
     "src/snapshot.ts",
+    "src/collect.ts",
+    "src/render.ts",
+    "src/tui-model.ts",
     "src/providers/claude.ts",
     "src/providers/codex.ts",
     "src/providers/cursor.ts",
     "src/providers/grok.ts",
     "src/providers/hermes.ts",
-    "src/render.ts",
-    "src/tui-card-body.ts",
     "src/provider-usage.test.ts"
   ],
   "verify_commands": [
@@ -35,7 +37,12 @@
     "Claude JSON model selection parses",
     "Codex configured and current-thread model selection parses",
     "Grok configured or active-session model selection parses",
-    "Unknown model remains null"
+    "Unknown model remains null",
+    "Cursor selectedModel binds to the matching Auto or named/API pool",
+    "Codex additional model pools affect availability only for the active model",
+    "Code-review and aggregate billing facts remain visible without blocking the active chat route",
+    "Request availability remains independent from utilization so explicit allowed, blocked, and unknown states are not converted into fake percentages",
+    "Validated current-period Grok CLI billing logs provide real weekly usage and reset facts with explicit freshness"
   ],
   "approved_at": "2026-07-15",
   "approved_by": "user-explicit-active-provider-model"

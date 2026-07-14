@@ -1,6 +1,6 @@
 # llmquota
 
-Fun terminal **roster** for Claude Code · Codex · Cursor · Grok · **Hermes (Nous Portal)** rate limits — who's installed, what's left on the plan, and when you can fight again.
+Fun terminal **roster** for Claude Code · Codex · Cursor · Grok · **Hermes** rate limits: who's installed, which provider/model is active, what's left on the plan, and when you can fight again.
 
 ```bash
 pnpm install
@@ -140,11 +140,11 @@ ln -sfn "$(pwd)/llmquota" ~/.local/bin/llmquota
 |---|---|
 | Claude | `~/.claude` + each [silo](https://github.com/0xNyk/silo) profile under `~/.silo/profiles/*` → refresh via `platform.claude.com` → OAuth usage (cached ~90s). Keychain only for the default slot. |
 | Codex | `~/.codex/auth.json` → ChatGPT WHAM usage |
-| Cursor | Cursor `state.vscdb` token → dashboard period usage |
-| Grok | `~/.grok/auth.json` OIDC → `api.x.ai/v1/models` probe. Weekly SuperGrok % has no stable public API — no invented meters/scores; `llmquota usage grok --open` → Settings. |
-| Hermes | `~/.hermes/auth.json` Nous OAuth → `portal.nousresearch.com/api/oauth/account` (subscription + credits). Login: `hermes portal`. |
+| Cursor | Cursor `state.vscdb` token → dashboard period usage; `~/.cursor/cli-config.json` selects the active model, which binds Auto vs named/API quota pools. |
+| Grok | `~/.grok/auth.json` OIDC → `api.x.ai/v1/models` probe. The latest validated `billing: fetched credits config` record in Grok's structured log supplies provider-fetched SuperGrok weekly %, tier, and reset. Its fetch age is shown; stale partial usage does not claim current availability. |
+| Hermes | `~/.hermes/config.yaml` selects the runtime provider/model. Nous uses Portal account subscription/credits; `openai-codex` uses Hermes's own OAuth token with ChatGPT WHAM. Other active providers remain quota-unknown unless an authoritative source exists. |
 
-**Read-only.** No account switching (use **silo** to launch Claude as a profile).
+No account switching and no agent CLI spawning (use **silo** to launch Claude as a profile). OAuth collectors may refresh their own stored tokens when the provider rejects an expired access token.
 
 ### Multi-profile config
 

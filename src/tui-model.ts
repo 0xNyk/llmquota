@@ -236,6 +236,7 @@ export function availability(p: ProviderSnapshot): Avail {
   if (p.error && !p.windows.length) return "unknown";
   const st = statusInfo(p, 0);
   if (st.kind === "ready") return "ready";
+  if (st.kind === "unknown") return "unknown";
   if (st.kind === "warn") {
     const sec = soonestResetSec(p);
     if (sec != null && sec <= SOON_SEC) return "soon";
@@ -246,7 +247,7 @@ export function availability(p: ProviderSnapshot): Avail {
     if (sec != null && sec <= SOON_SEC) return "soon";
     return "tired";
   }
-  return "tired";
+  return st.kind === "auth" ? "auth" : st.kind === "missing" ? "missing" : "tired";
 }
 
 export function levelColor(lvl: UsageLevel): string {
@@ -347,13 +348,21 @@ export function statusInfo(p: ProviderSnapshot, tick: number): StatusInfo {
     if (p.score >= 90) return { label: "limping", short: "!", color: YELLOW, kind: "warn" };
     return { label: "ready", short: pulse, color: GREEN, kind: "ready" };
   }
+  if (p.requestAvailability === "blocked") {
+    return { label: "ko", short: "✕", color: RED, kind: "ko" };
+  }
+  if (p.requestAvailability === "unknown") {
+    return { label: "usage unknown", short: "?", color: YELLOW, kind: "unknown" };
+  }
   if (p.windows.some((w) => meterAffectsAvailability(w) && (w.usedPercent ?? 0) >= 100)) {
     return { label: "ko", short: "✕", color: RED, kind: "ko" };
   }
   if (p.windows.some((w) => meterAffectsAvailability(w) && (w.usedPercent ?? 0) >= 90)) {
     return { label: "limping", short: "!", color: YELLOW, kind: "warn" };
   }
-  return { label: "ready", short: pulse, color: GREEN, kind: "ready" };
+  return p.requestAvailability === "available"
+    ? { label: "ready", short: pulse, color: GREEN, kind: "ready" }
+    : { label: "usage unknown", short: "?", color: YELLOW, kind: "unknown" };
 }
 
 export function isDormant(p: ProviderSnapshot): boolean {

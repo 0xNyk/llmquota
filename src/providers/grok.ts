@@ -1,6 +1,21 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import type { ProviderSnapshot } from "../types.js";
-import { decodeJwtPayload, fetchJson, home } from "../util.js";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  writeFileSync,
+} from "node:fs";
+import type { Meter, ProviderSnapshot } from "../types.js";
+import {
+  availableInFromIso,
+  decodeJwtPayload,
+  fetchJson,
+  formatDuration,
+  home,
+  normalizeIsoTimestamp,
+} from "../util.js";
 import { baseSnapshot, isExpiredAt } from "../snapshot.js";
 import { detectGrok } from "./detect.js";
 import { readGrokActiveSelection } from "../active-selection.js";
@@ -22,6 +37,170 @@ interface GrokAuthStore {
   key: string;
   entry: GrokAuthEntry;
   raw: Record<string, GrokAuthEntry>;
+}
+
+export interface GrokBillingRecord {
+  seenAt: string;
+  usedPercent: number;
+  periodStart: string;
+  periodEnd: string;
+  subscriptionTier: string | null;
+  onDemandEnabled: boolean | null;
+  onDemandCap: number | null;
+  onDemandUsed: number | null;
+  prepaidBalance: number | null;
+}
+
+function nonnegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+export function parseGrokBillingLogLine(line: string): GrokBillingRecord | null {
+  try {
+    const row = JSON.parse(line) as {
+      ts?: unknown;
+      msg?: unknown;
+      ctx?: { config?: Record<string, unknown>; onDemandEnabled?: unknown; subscriptionTier?: unknown };
+    };
+    if (row.msg !== "billing: fetched credits config") return null;
+    const seenAt = typeof row.ts === "string" ? normalizeIsoTimestamp(row.ts) : null;
+    const config = row.ctx?.config;
+    const period = config?.currentPeriod;
+    if (!seenAt || !period || typeof period !== "object") return null;
+    const current = period as Record<string, unknown>;
+    if (current.type !== "USAGE_PERIOD_TYPE_WEEKLY") return null;
+    const periodStart = typeof current.start === "string"
+      ? normalizeIsoTimestamp(current.start)
+      : null;
+    const periodEnd = typeof current.end === "string"
+      ? normalizeIsoTimestamp(current.end)
+      : null;
+    const usedPercent = nonnegativeNumber(config.creditUsagePercent);
+    if (!periodStart || !periodEnd || usedPercent == null || usedPercent > 100) return null;
+    const val = (name: string) => {
+      const raw = config[name];
+      return raw && typeof raw === "object"
+        ? nonnegativeNumber((raw as Record<string, unknown>).val)
+        : null;
+    };
+    return {
+      seenAt,
+      usedPercent,
+      periodStart,
+      periodEnd,
+      subscriptionTier: typeof row.ctx?.subscriptionTier === "string"
+        ? row.ctx.subscriptionTier.trim() || null
+        : null,
+      onDemandEnabled: typeof row.ctx?.onDemandEnabled === "boolean"
+        ? row.ctx.onDemandEnabled
+        : null,
+      onDemandCap: val("onDemandCap"),
+      onDemandUsed: val("onDemandUsed"),
+      prepaidBalance: val("prepaidBalance"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function readLatestGrokBillingRecord(
+  path = home(".grok", "logs", "unified.jsonl"),
+  nowMs = Date.now(),
+): GrokBillingRecord | null {
+  if (!existsSync(path)) return null;
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, 8 * 1024 * 1024);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, size - length);
+    const lines = buffer.toString("utf8").split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i]!.includes("billing: fetched credits config")) continue;
+      const record = parseGrokBillingLogLine(lines[i]!);
+      if (!record) continue;
+      const start = Date.parse(record.periodStart);
+      const end = Date.parse(record.periodEnd);
+      const seen = Date.parse(record.seenAt);
+      if (start <= nowMs && nowMs < end && seen <= nowMs) return record;
+    }
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
+  return null;
+}
+
+export function applyGrokBillingRecord(
+  base: ProviderSnapshot,
+  record: GrokBillingRecord,
+  nowMs = Date.now(),
+): ProviderSnapshot {
+  const periodSeconds = Math.max(
+    0,
+    Math.floor((Date.parse(record.periodEnd) - Date.parse(record.periodStart)) / 1000),
+  );
+  const ageSeconds = Math.max(0, Math.floor((nowMs - Date.parse(record.seenAt)) / 1000));
+  const fresh = ageSeconds <= 5 * 60;
+  const hasOnDemand = record.onDemandEnabled === true && (
+    (record.onDemandCap != null && record.onDemandUsed != null && record.onDemandUsed < record.onDemandCap) ||
+    (record.prepaidBalance != null && record.prepaidBalance > 0)
+  );
+  const durableExhaustion = record.usedPercent >= 100 && !hasOnDemand;
+  const weeklyAffectsAvailability = fresh || durableExhaustion;
+  const age = formatDuration(ageSeconds) || "now";
+  const weekly: Meter = {
+    name: "weekly",
+    label: fresh ? "weekly" : `weekly · seen ${age} ago`,
+    usedPercent: record.usedPercent,
+    resetsAt: record.periodEnd,
+    availableIn: availableInFromIso(record.periodEnd),
+    windowSeconds: periodSeconds || null,
+    detail: `provider-fetched ${record.seenAt}`,
+    affectsAvailability: weeklyAffectsAvailability && !hasOnDemand,
+  };
+  base.windows = [weekly, ...base.windows];
+  if (record.onDemandCap != null && record.onDemandCap > 0 && record.onDemandUsed != null) {
+    base.windows.push({
+      name: "on_demand",
+      label: "on-demand",
+      usedPercent: (record.onDemandUsed / record.onDemandCap) * 100,
+      resetsAt: record.periodEnd,
+      availableIn: availableInFromIso(record.periodEnd),
+      windowSeconds: periodSeconds || null,
+      detail: `${record.onDemandUsed} of ${record.onDemandCap} used`,
+      affectsAvailability: false,
+    });
+  }
+  if (record.subscriptionTier) {
+    base.plan = record.subscriptionTier;
+    const api = base.subscription?.replace(/^Grok · /, "") || null;
+    base.subscription = [record.subscriptionTier, api].filter(Boolean).join(" · ");
+  }
+  base.source = base.source === "none"
+    ? "grok_billing_log"
+    : `${base.source}+grok_billing_log`;
+  if (durableExhaustion) {
+    base.score = 100;
+    base.requestAvailability = "blocked";
+  } else if (fresh && !hasOnDemand) {
+    base.score = record.usedPercent;
+    base.requestAvailability = "available";
+  } else if (hasOnDemand) {
+    base.score = null;
+    base.requestAvailability = "available";
+  }
+  const billingHint = `SuperGrok billing last fetched ${age} ago by Grok CLI`;
+  let probeHint = base.hint;
+  if (probeHint && /api\.x\.ai credits empty/i.test(probeHint)) {
+    probeHint = "api.x.ai credits empty (separate from the SuperGrok weekly pool)";
+  } else if (probeHint && /^Auth OK · SuperGrok weekly %/i.test(probeHint)) {
+    probeHint = "xAI API auth OK";
+  }
+  base.hint = [billingHint, probeHint].filter(Boolean).join(" · ");
+  return base;
 }
 
 function readGrokAuthStores(): GrokAuthStore[] {
@@ -157,9 +336,11 @@ export async function collectGrokAll(): Promise<ProviderSnapshot[]> {
     snap.hint = bin.installed ? "Run `grok login`." : "Install Grok Build CLI, then `grok login`.";
     return [snap];
   }
+  const billing = stores.length === 1 ? readLatestGrokBillingRecord() : null;
   const out: ProviderSnapshot[] = [];
   for (let i = 0; i < stores.length; i++) {
-    out.push(await collectGrokEntry(stores[i]!, i));
+    const snap = await collectGrokEntry(stores[i]!, i);
+    out.push(billing && i === 0 ? applyGrokBillingRecord(snap, billing) : snap);
   }
   return out;
 }
