@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-exec "$ROOT/node_modules/.bin/tsx" "$ROOT/src/index.ts" "$@"
+cd "$ROOT"
+
+if [[ -f "$ROOT/dist/index.js" ]]; then
+  exec node "$ROOT/dist/index.js" "$@"
+fi
+
+if [[ -x "$ROOT/node_modules/.bin/tsx" ]]; then
+  exec "$ROOT/node_modules/.bin/tsx" "$ROOT/src/index.ts" "$@"
+fi
+
+echo "llmquota: run \`pnpm install && pnpm build\` first" >&2
+exit 1
