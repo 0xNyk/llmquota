@@ -24,8 +24,12 @@ if [[ -z "$BIN" ]]; then
   exit 0
 fi
 
-export LLMQUOTA_BUS_FROM="${LLMQUOTA_BUS_FROM:-claude}"
-ctx="$("$BIN" bus hook-context 2>/dev/null || true)"
+# Force only the CLI family; let llmquota derive a unique per-session identity
+# (claude/<profile> or claude#<terminal session>). A hardcoded shared identity
+# would collide cursors across concurrent Claude sessions.
+export LLMQUOTA_BUS_CLI="${LLMQUOTA_BUS_CLI:-claude}"
+# Keep stderr visible (Claude Code debug view) so a broken binary is not silent.
+ctx="$("$BIN" bus hook-context || true)"
 if [[ -z "${ctx// }" ]]; then
   exit 0
 fi

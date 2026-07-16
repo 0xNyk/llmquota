@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-cd "$ROOT"
+
+# Resolve symlinks (e.g. ~/.local/bin/llmquota -> this repo) so ROOT is the
+# real package directory. Never cd: bus/active-selection read the caller cwd.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
 
 if [[ -f "$ROOT/dist/index.js" ]]; then
   exec node "$ROOT/dist/index.js" "$@"
