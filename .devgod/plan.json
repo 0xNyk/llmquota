@@ -1,59 +1,59 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "kind": "feature",
-  "title": "Polish responsive TUI cards and quota meters",
+  "title": "Animate provider cards during cross-CLI interaction",
   "status": "done",
   "venture_or_app": "llmquota",
-  "summary": "Polish the responsive quota arena, group shared routes without merging pools, and expose authoritative Nous purchased-credit remainder with explicit source freshness.",
+  "summary": "Translate new ring-bus sender and recipient identities into a short-lived, accessible interaction pulse on the matching provider cards.",
   "risks": [
-    "Compact cards must still retain status, active selection, hottest quota meters, and reset facts",
-    "Variable row heights must not move mouse hit regions away from rendered cards",
-    "Wide and narrow terminals must fit without horizontal or vertical overflow",
-    "Exact-width ANSI lines must not gain an ellipsis"
+    "Broadcast messages could animate unrelated cards",
+    "Persistent terminal motion could distract users",
+    "Anonymous mode could expose session identity"
   ],
   "files_touch": [
-    "src/tui-ansi.ts",
-    "src/tui-card-body.ts",
-    "src/tui-cards.ts",
-    "src/tui-frame.ts",
-    "src/tui-model.ts",
-    "src/tui-anon.ts",
-    "src/tui-groups.ts",
-    "src/tui-loading.ts",
     "src/tui.ts",
-    "src/index.ts",
-    "src/types.ts",
-    "src/providers/claude.ts",
-    "src/providers/hermes.ts",
-    "src/util.ts",
-    "src/provider-usage.test.ts",
+    "src/tui-frame.ts",
+    "src/tui-cards.ts",
+    "src/tui-model.ts",
     "src/tui-card-body.test.ts",
     "README.md"
   ],
   "verify_commands": [
-    "pnpm test",
     "pnpm build",
-    "git diff --check"
+    "pnpm test"
   ],
+  "complexity": {
+    "need_now": "Make live collaboration visible on the existing provider cards without adding another panel or daemon.",
+    "simplest_viable_design": "Keep a short-lived set of provider IDs in the TUI, derive it from new bus messages, and render a deterministic card pulse with a static reduced-motion state.",
+    "evidence": [
+      "The TUI already polls ring growth every tick",
+      "Provider cards already redraw on a 500ms animation tick",
+      "Bus identities begin with provider CLI names"
+    ],
+    "new_abstractions": [],
+    "new_runtime_components": [],
+    "rejected_options": [
+      {
+        "option": "Add a background event daemon",
+        "reason": "The existing TUI tick already observes ring growth and can own ephemeral presentation state"
+      },
+      {
+        "option": "Animate every card for broadcasts",
+        "reason": "That would imply interaction recipients not proven by the message"
+      }
+    ],
+    "reversibility": {
+      "class": "reversible",
+      "rollback": "Remove the ephemeral interaction map and card interaction rendering parameters.",
+      "decision_record": null
+    },
+    "solid_justifications": []
+  },
   "tests": [
-    "Exact-width ANSI content pads without truncation or ellipsis",
-    "Card row heights follow meaningful content within minimum and maximum bounds",
-    "Row heights shrink to the terminal budget while preserving minimum card bodies",
-    "Incomplete grid rows are horizontally centered",
-    "Meter percentages remain fully visible at card width boundaries",
-    "Quota bars use a stable heavy-used and thin-remaining visual grammar",
-    "Active provider and model appear before quota and billing facts",
-    "Blocked cards show a COOLDOWN title and badge while unknown cards do not",
-    "Cooldown cards use a distinct panel treatment and appear as cooldown in the next-up strip",
-    "Claude falls back to an authenticated default profile when the configured active silo profile is signed out",
-    "Anonymous mode removes accounts, profiles, paths, referrals, bus content, and monetary details from frames",
-    "Loading screen lists each quota source with pending, done, and error state",
-    "Loading animation uses stable grouped ANSI runs and a lower redraw cadence",
-    "Harness cards sharing a canonical provider render adjacent with an explicit shared-route strip",
-    "Provider grouping does not merge accounts, percentages, resets, or availability evidence",
-    "Nous purchased_credits_remaining renders as a nonblocking paid-credit fact",
-    "Inactive Nous credit cache is labeled with age and never presented as live OpenAI quota"
+    "Unit: bus identities map only to supported provider IDs",
+    "Unit: interaction chrome changes deterministically and has a reduced-motion state",
+    "Regression: full TUI and parser test suite remains green"
   ],
-  "approved_at": "2026-07-15",
-  "approved_by": "user-explicit-ui-enhancement"
+  "approved_at": "2026-07-16T00:00:00Z",
+  "approved_by": "user"
 }

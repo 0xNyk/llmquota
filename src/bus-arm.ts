@@ -62,8 +62,15 @@ function instructionBlock(from: string): string {
     "  llmquota bus send -t repo '…'           # same git repo",
     "  llmquota bus send -t claude/work '…'    # one session",
     "  llmquota bus send -t claude '…'         # all claude/* sessions",
+    "  llmquota bus resume                      # read latest repo takeover checkpoint",
+    "  llmquota bus handoff 'objective=…; state=…; files=…; tests=…; next=…'",
+    "  llmquota bus work -m 'task' src/file.ts  # publish advisory write lane",
+    "  llmquota bus done                        # clear write lane",
     "",
-    "Skip when LIVE is absent. Do not invent quota %. Read-only mailbox.",
+    "Before editing, publish the files/directories with bus work; coordinate any overlap warning.",
+    "Clear with bus done. Refresh the handoff after meaningful state changes and before long/risky calls.",
+    "On takeover, inspect the current repo before trusting the checkpoint. Never include secrets.",
+    "Skip ring pull/send when LIVE is absent. Handoff remains available. Do not invent quota %.",
     BLOCK_END,
   ].join("\n");
 }

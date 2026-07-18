@@ -24,6 +24,13 @@ export const CARD_MIN_BODY = 5;
 export const GAP = 2;
 export const MARGIN = 1;
 export const SPARK = "▁▂▃▄▅▆▇█";
+const BUS_PROVIDER_IDS = new Set(["claude", "codex", "cursor", "grok", "hermes"]);
+
+/** Provider card associated with an advisory bus session identity. */
+export function providerIdFromBusIdentity(identity: string | null | undefined): string | null {
+  const base = (identity || "").trim().toLowerCase().split(/[/#]/)[0] || "";
+  return BUS_PROVIDER_IDS.has(base) ? base : null;
+}
 
 /** Seconds remaining from "5d6h" / "3h40m" / "45m" strings. */
 export function parseAvailableIn(s: string | null | undefined): number | null {

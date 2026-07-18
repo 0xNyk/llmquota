@@ -19,7 +19,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { home } from "./util.js";
 
 export interface BusMessage {
@@ -38,6 +39,16 @@ export interface BusLiveInfo {
   startedAt: string;
   /** Ring byte offset when this arena started; new readers begin here. */
   ringOffset?: number;
+}
+
+export interface BusHandoff {
+  version: 1;
+  ts: string;
+  from: string;
+  cwd: string;
+  repo: string | null;
+  project: string;
+  text: string;
 }
 
 export function busDir(): string {
@@ -63,6 +74,10 @@ function ensureBusDir(): void {
 
 function busSessionsDir(): string {
   return home(".local", "share", "llmquota", "bus", "sessions");
+}
+
+function busHandoffsDir(): string {
+  return join(busDir(), "handoffs");
 }
 
 /** Normalize identity: `claude/personal`, `codex#ttys003`, `arena`. */
@@ -220,6 +235,74 @@ export function busWorkspace(cwd = process.cwd()): { cwd: string; repo: string |
   return { cwd: abs, repo, project };
 }
 
+function handoffPath(cwd = process.cwd()): string {
+  const ws = busWorkspace(cwd);
+  const scope = ws.repo || ws.cwd;
+  const hash = createHash("sha256").update(scope).digest("hex").slice(0, 16);
+  const project = busNormalizeId(ws.project).replace(/[/#]/g, "-");
+  return join(busHandoffsDir(), `${project}-${hash}.json`);
+}
+
+/** Atomically replace the latest repo-scoped takeover checkpoint. */
+export function busWriteHandoff(input: {
+  text: string;
+  from?: string;
+  cwd?: string;
+}): BusHandoff {
+  const text = input.text.trim();
+  if (!text) throw new Error("empty handoff");
+  ensureBusDir();
+  const dir = busHandoffsDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const ws = busWorkspace(input.cwd || process.cwd());
+  const handoff: BusHandoff = {
+    version: 1,
+    ts: new Date().toISOString(),
+    from: busResolveIdentity(input.from),
+    cwd: ws.cwd,
+    repo: ws.repo,
+    project: ws.project,
+    text: text.slice(0, 16_000),
+  };
+  const path = handoffPath(ws.cwd);
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(handoff, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmp, path);
+  busTouchPresence(handoff.from);
+  return handoff;
+}
+
+export function busReadHandoff(cwd = process.cwd()): BusHandoff | null {
+  const path = handoffPath(cwd);
+  if (!existsSync(path)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as BusHandoff;
+    if (raw?.version !== 1 || !raw.ts || !raw.from || !raw.text) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+export function busClearHandoff(cwd = process.cwd()): boolean {
+  const path = handoffPath(cwd);
+  if (!existsSync(path)) return false;
+  try {
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function formatBusHandoff(handoff: BusHandoff): string {
+  return [
+    `handoff · ${handoff.project} · ${handoff.ts} · from ${handoff.from}`,
+    handoff.text,
+    `verify current repo state before continuing; checkpoint may be stale`,
+  ].join("\n");
+}
+
 export interface BusPresence {
   id: string;
   cli: string;
@@ -228,6 +311,11 @@ export interface BusPresence {
   cwd: string;
   repo: string | null;
   project: string;
+  work?: {
+    summary: string;
+    files: string[];
+    startedAt: string;
+  };
 }
 
 function presencePath(id: string): string {
@@ -236,13 +324,23 @@ function presencePath(id: string): string {
 }
 
 /** Heartbeat so `bus who` can list addressable sessions (incl. cwd/repo). */
-export function busTouchPresence(id?: string): BusPresence {
+export function busTouchPresence(
+  id?: string,
+  work?: BusPresence["work"] | null,
+): BusPresence {
   ensureBusDir();
   const dir = busSessionsDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const self = busResolveIdentity(id);
   const cli = self.split(/[/#]/)[0] || self;
   const ws = busWorkspace();
+  let previousWork: BusPresence["work"];
+  try {
+    const previous = JSON.parse(readFileSync(presencePath(self), "utf8")) as BusPresence;
+    if (previous.repo === ws.repo && previous.cwd === ws.cwd) previousWork = previous.work;
+  } catch {
+    /* first heartbeat */
+  }
   const info: BusPresence = {
     id: self,
     cli,
@@ -251,13 +349,66 @@ export function busTouchPresence(id?: string): BusPresence {
     cwd: ws.cwd,
     repo: ws.repo,
     project: ws.project,
+    ...(work === null ? {} : { work: work ?? previousWork }),
   };
   writeFileSync(presencePath(self), `${JSON.stringify(info)}\n`, { mode: 0o600 });
   return info;
 }
 
+function normalizeWorkFile(file: string, ws: ReturnType<typeof busWorkspace>): string {
+  const root = ws.repo || ws.cwd;
+  const absolute = isAbsolute(file) ? resolve(file) : resolve(ws.cwd, file);
+  const rel = relative(root, absolute).replaceAll("\\", "/");
+  if (!rel || rel === ".") return ".";
+  if (rel === ".." || rel.startsWith("../")) {
+    throw new Error(`work file is outside this workspace: ${file}`);
+  }
+  return rel;
+}
+
+function workFilesOverlap(a: string, b: string): boolean {
+  if (a === "." || b === ".") return true;
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+/** Publish an advisory write lane and report overlapping active peers. */
+export function busSetWork(input: {
+  summary: string;
+  files: string[];
+  from?: string;
+}): { presence: BusPresence; conflicts: BusPresence[] } {
+  const summary = input.summary.replace(/\s+/g, " ").trim();
+  if (!summary) throw new Error("empty work summary");
+  if (!input.files.length) throw new Error("at least one work file is required");
+  const ws = busWorkspace();
+  const files = [...new Set(input.files.map((file) => normalizeWorkFile(file, ws)))].slice(0, 100);
+  const presence = busTouchPresence(input.from, {
+    summary: summary.slice(0, 500),
+    files,
+    startedAt: new Date().toISOString(),
+  });
+  const peers = busWho({ cwd: ws.cwd, from: presence.id }).sameRepo;
+  const conflicts = peers.filter((peer) =>
+    peer.work?.files.some((theirs) => files.some((ours) => workFilesOverlap(ours, theirs))),
+  );
+  return { presence, conflicts };
+}
+
+export function busClearWork(from?: string): boolean {
+  const self = busResolveIdentity(from);
+  let hadWork = false;
+  try {
+    const previous = JSON.parse(readFileSync(presencePath(self), "utf8")) as BusPresence;
+    hadWork = Boolean(previous.work);
+  } catch {
+    /* no presence yet */
+  }
+  busTouchPresence(self, null);
+  return hadWork;
+}
+
 /** Recently seen sessions + peers in the same directory/repo. */
-export function busWho(opts?: { maxAgeMs?: number; cwd?: string }): {
+export function busWho(opts?: { maxAgeMs?: number; cwd?: string; from?: string }): {
   live: boolean;
   me: string;
   workspace: { cwd: string; repo: string | null; project: string };
@@ -268,7 +419,7 @@ export function busWho(opts?: { maxAgeMs?: number; cwd?: string }): {
 } {
   const maxAgeMs = opts?.maxAgeMs ?? 45 * 60_000;
   const now = Date.now();
-  const me = busResolveIdentity();
+  const me = busResolveIdentity(opts?.from);
   const workspace = busWorkspace(opts?.cwd || process.cwd());
   const sessions: BusPresence[] = [];
   const dir = busSessionsDir();
@@ -379,6 +530,10 @@ export function busAgentPrompt(): string {
     "Before answering, run `llmquota bus pull` (unread addressed to you, all, or this directory). " +
     "Reply with `llmquota bus send -t all|here|repo|id '…'` " +
     `(or set LLMQUOTA_BUS_FROM=${me}). ` +
+    "Takeover: `llmquota bus resume`. Refresh after meaningful work: " +
+    "`llmquota bus handoff 'objective=…; state=…; files=…; tests=…; next=…'`. " +
+    "Before editing: `llmquota bus work -m 'task' <files...>`; coordinate overlap warnings; " +
+    "release with `llmquota bus done`. " +
     "Same-dir peers: `-t here` · same git repo: `-t repo` · list: `llmquota bus who`."
   );
 }

@@ -14,7 +14,7 @@ import { envDisablesMouse } from "./terminal.js";
 import { memoClear } from "./util.js";
 import { ESC } from "./tui-ansi.js";
 import { type LoadProgress } from "./tui-loading.js";
-import { REFRESH_MS, TICK_LOADING_MS, TICK_MS } from "./tui-model.js";
+import { providerIdFromBusIdentity, REFRESH_MS, TICK_LOADING_MS, TICK_MS } from "./tui-model.js";
 import {
   drainInput,
   hitAt,
@@ -98,6 +98,8 @@ export async function runTui(
   let redrawQueued = false;
   let redrawTimer: NodeJS.Timeout | null = null;
   let busSeenSize = busFileSize();
+  const interactions = new Map<string, number>();
+  const reducedMotion = process.env.LLMQUOTA_REDUCE_MOTION === "1";
 
   const setTickRate = (ms: number): void => {
     if (tickTimer) clearInterval(tickTimer);
@@ -109,6 +111,13 @@ export async function runTui(
         busSeenSize = growth.size;
         showBus = true;
         const last = growth.newMessages[growth.newMessages.length - 1]!;
+        for (const message of growth.newMessages) {
+          const sender = providerIdFromBusIdentity(message.from);
+          const recipient = providerIdFromBusIdentity(message.to);
+          const expiresAt = Date.now() + (reducedMotion ? 1500 : 3500);
+          if (sender) interactions.set(sender, expiresAt);
+          if (recipient) interactions.set(recipient, expiresAt);
+        }
         // Skip toast for our own arena shouts (already toasted on send)
         if (last.from !== "arena") {
           showToast(`bus ← ${last.from}: ${last.text.slice(0, 40)}`);
@@ -176,6 +185,10 @@ export async function runTui(
       tick,
       nextRefreshIn,
       anon,
+      interactingProviders: anon
+        ? []
+        : [...interactions].filter(([, expiresAt]) => expiresAt > Date.now()).map(([id]) => id),
+      reducedMotion,
     });
     lastHits = framed.hits;
     lastScreen = writeScreen(framed.screen, lastScreen);

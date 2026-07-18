@@ -91,8 +91,9 @@ export function boxCard(
   hovered: boolean,
   accent: string,
   panelBg: string,
+  interactionGlyph = "",
 ): string[] {
-  const focusGlyph = focused ? "◆" : hovered ? "◇" : " ";
+  const focusGlyph = interactionGlyph || (focused ? "◆" : hovered ? "◇" : " ");
   const titleText = `${focusGlyph} ${title}`.slice(0, Math.max(1, inner - 2));
   const dash = Math.max(0, inner - vlen(titleText) - 1);
   const top = `╭${titleText} ${"─".repeat(dash)}╮`;
@@ -108,8 +109,10 @@ export function boxCard(
   });
 }
 
-function cardChrome(avail: ReturnType<typeof availability>, cooldown: boolean, focused: boolean, hovered: boolean) {
-  const accent = focused
+function cardChrome(avail: ReturnType<typeof availability>, cooldown: boolean, focused: boolean, hovered: boolean, interacting = false, interactionBright = false) {
+  const accent = interacting
+    ? interactionBright ? WHITE : CYAN
+    : focused
     ? CYAN
     : hovered
       ? WHITE
@@ -121,7 +124,9 @@ function cardChrome(avail: ReturnType<typeof availability>, cooldown: boolean, f
             ? RED
             : FG_MUTE;
 
-  const panelBg = focused
+  const panelBg = interacting
+    ? interactionBright ? BG_HOVER : BG_HERO
+    : focused
     ? BG_HERO
     : hovered
       ? BG_HOVER
@@ -148,10 +153,13 @@ export function fighterCard(
   hovered: boolean,
   tick: number,
   checkedAt?: string | null,
+  interacting = false,
+  reducedMotion = false,
 ): { lines: string[]; refBodyRow: number | null } {
   const contentW = inner - 2;
   const { avail, title } = titleClock(p, checkedAt);
-  const { accent, panelBg } = cardChrome(avail, isCooldown(p), focused, hovered);
+  const interactionBright = !reducedMotion && tick % 2 === 0;
+  const { accent, panelBg } = cardChrome(avail, isCooldown(p), focused, hovered, interacting, interactionBright);
 
   const slots = buildCardSlots(p, contentW, bodyH, focused, tick, checkedAt);
   const packed = packCardSlots(slots, bodyH);
@@ -166,6 +174,7 @@ export function fighterCard(
       hovered,
       accent,
       panelBg,
+      interacting ? (reducedMotion ? "↔" : interactionBright ? "◆" : "◇") : "",
     ),
     refBodyRow: packed.refBodyRow,
   };
