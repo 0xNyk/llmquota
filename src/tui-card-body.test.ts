@@ -1,7 +1,7 @@
 import { cardTitle, packCardSlots, selectionSlot, statusSlot, type CardSlot } from "./tui-card-body.js";
-import { padPlain, vlen } from "./tui-ansi.js";
-import { allocateRowBodyHeights, partialRowOffset } from "./tui-cards.js";
-import { usageWave } from "./tui-model.js";
+import { padPlain, stripAnsi, vlen } from "./tui-ansi.js";
+import { allocateRowBodyHeights, fighterCard, partialRowOffset } from "./tui-cards.js";
+import { providerIdFromBusIdentity, usageWave } from "./tui-model.js";
 import { anonymousReport, redactPrivateText } from "./tui-anon.js";
 import type { RosterReport } from "./types.js";
 import { clusterProviderRoutes, providerRouteGroup, sharedRouteGroups } from "./tui-groups.js";
@@ -22,6 +22,19 @@ const slots: CardSlot[] = [
   { kind: "hint", priority: 80, line: "hint" },
   { kind: "when", priority: 90, line: "when", sticky: true },
 ];
+
+assert(providerIdFromBusIdentity("claude/personal") === "claude", "maps profiled bus identity to provider card");
+assert(providerIdFromBusIdentity("codex#ttys004") === "codex", "maps tty bus identity to provider card");
+assert(providerIdFromBusIdentity("repo") == null, "does not invent provider card for routing target");
+
+{
+  const provider = baseSnapshot({ id: "codex", displayName: "Codex", installed: true, auth: "ok" });
+  const animatedA = fighterCard(provider, 36, 5, false, false, 0, null, true, false).lines[0]!;
+  const animatedB = fighterCard(provider, 36, 5, false, false, 1, null, true, false).lines[0]!;
+  const reduced = fighterCard(provider, 36, 5, false, false, 0, null, true, true).lines[0]!;
+  assert(animatedA !== animatedB, "interaction card pulse changes phase");
+  assert(stripAnsi(reduced).includes("↔"), "reduced-motion interaction uses static link marker");
+}
 
 {
   const exact = padPlain("12345", 5);

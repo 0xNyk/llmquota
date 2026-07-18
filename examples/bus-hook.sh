@@ -16,8 +16,6 @@ elif [[ -n "${LLMQUOTA_BIN:-}" && -x "${LLMQUOTA_BIN}" ]]; then
   BIN="$LLMQUOTA_BIN"
 elif [[ -x "${HOME}/dev/llmquota/llmquota" ]]; then
   BIN="${HOME}/dev/llmquota/llmquota"
-elif [[ -x "/path/to/llmquota/llmquota" ]]; then
-  BIN="/path/to/llmquota/llmquota"
 fi
 
 if [[ -z "$BIN" ]]; then

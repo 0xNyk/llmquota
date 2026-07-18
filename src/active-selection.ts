@@ -6,6 +6,7 @@ import {
   readFileSync,
   readSync,
   readdirSync,
+  statSync,
 } from "node:fs";
 import { join } from "node:path";
 
@@ -122,7 +123,12 @@ export function readHermesActiveSelection(homeDir: string): ActiveSelection {
   return text ? parseHermesModelConfig(text) : { provider: null, model: null };
 }
 
-export function readClaudeActiveSelection(configDir: string): ActiveSelection {
+export function readClaudeActiveSelection(
+  configDir: string,
+  cwd = process.cwd(),
+): ActiveSelection {
+  const sessionModel = claudeSessionModel(configDir, cwd);
+  if (sessionModel) return { provider: "Anthropic", model: sessionModel };
   for (const name of ["settings.local.json", "settings.json"]) {
     const text = readText(join(configDir, name));
     if (!text) continue;
@@ -151,6 +157,40 @@ function readTail(path: string, maxBytes = 2 * 1024 * 1024): string | null {
   } finally {
     if (fd != null) closeSync(fd);
   }
+}
+
+function claudeSessionModel(configDir: string, cwd: string): string | null {
+  const projectDir = join(configDir, "projects", cwd.replace(/\//g, "-"));
+  try {
+    const latest = readdirSync(projectDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+      .map((entry) => ({
+        path: join(projectDir, entry.name),
+        mtimeMs: statSync(join(projectDir, entry.name)).mtimeMs,
+      }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+    if (!latest) return null;
+    const text = readTail(latest.path);
+    if (!text) return null;
+    const lines = text.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i]!.includes('"type":"assistant"')) continue;
+      try {
+        const row = JSON.parse(lines[i]!) as {
+          cwd?: unknown;
+          message?: { model?: unknown };
+        };
+        const model = row.message?.model;
+        if (row.cwd !== cwd || typeof model !== "string" || model === "<synthetic>") continue;
+        return cleanScalar(model);
+      } catch {
+        // The first tail line may be partial.
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function codexThreadModel(codexHome: string, threadId: string | undefined): string | null {
@@ -192,7 +232,40 @@ export function readCodexActiveSelection(
   };
 }
 
-export function readGrokActiveSelection(grokHome: string): ActiveSelection {
+function grokSessionModel(grokHome: string, cwd: string): string | null {
+  const root = join(grokHome, "sessions", encodeURIComponent(cwd));
+  try {
+    let newest: { model: string; at: number } | null = null;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const text = readText(join(root, entry.name, "summary.json"));
+      if (!text) continue;
+      try {
+        const summary = JSON.parse(text) as {
+          info?: { cwd?: unknown };
+          current_model_id?: unknown;
+          last_active_at?: unknown;
+          updated_at?: unknown;
+        };
+        if (summary.info?.cwd !== cwd || typeof summary.current_model_id !== "string") continue;
+        const model = cleanScalar(summary.current_model_id);
+        const stamp = summary.last_active_at ?? summary.updated_at;
+        const at = typeof stamp === "string" ? Date.parse(stamp) : Number.NaN;
+        if (model && Number.isFinite(at) && (!newest || at > newest.at)) newest = { model, at };
+      } catch {
+        // Ignore incomplete session summaries.
+      }
+    }
+    return newest?.model ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function readGrokActiveSelection(
+  grokHome: string,
+  cwd = process.cwd(),
+): ActiveSelection {
   const activeText = readText(join(grokHome, "active_sessions.json"));
   if (activeText) {
     try {
@@ -212,6 +285,8 @@ export function readGrokActiveSelection(grokHome: string): ActiveSelection {
       // Fall back to configured new-session model.
     }
   }
+  const sessionModel = grokSessionModel(grokHome, cwd);
+  if (sessionModel) return { provider: "xAI", model: sessionModel };
   const config = readText(join(grokHome, "config.toml"));
   return config
     ? parseTomlModelConfig(config, { section: "models", defaultProvider: "xAI" })

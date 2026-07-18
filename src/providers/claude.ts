@@ -7,7 +7,7 @@ import {
   loadLlmquotaConfig,
   type ClaudeProfileTarget,
 } from "../profiles.js";
-import type { Meter, ProviderSnapshot } from "../types.js";
+import type { Meter, ProviderSnapshot, RequestAvailability } from "../types.js";
 import { baseSnapshot, isExpiredAt } from "../snapshot.js";
 import {
   availableInFromIso,
@@ -97,6 +97,25 @@ const CLAUDE_USAGE_FIELDS = [
 
 export function isClaudeUsagePayload(value: unknown): value is ClaudeUsagePayload {
   return hasAnyOwn(value, CLAUDE_USAGE_FIELDS) && value.error == null;
+}
+
+export function claudeRequestAvailability(
+  payload: ClaudeUsagePayload,
+  windows: Meter[],
+): RequestAvailability {
+  const score = availabilityScore(windows);
+  if (score == null) return "unknown";
+  if (score < 100) return "available";
+
+  const enabled = payload.extra_usage?.is_enabled ?? payload.spend?.enabled;
+  const disabledReason = payload.extra_usage?.disabled_reason ?? payload.spend?.disabled_reason;
+  const paidPercent = payload.extra_usage?.utilization ?? payload.spend?.percent;
+  if (enabled !== true) return "blocked";
+  if (disabledReason) return "blocked";
+  if (typeof paidPercent !== "number" || !Number.isFinite(paidPercent) || paidPercent < 0) {
+    return "unknown";
+  }
+  return paidPercent < 100 ? "available" : "blocked";
 }
 
 interface ClaudeCreds {
@@ -421,8 +440,11 @@ function spendMeter(
   extra: ClaudeExtraUsage | null | undefined,
 ): Meter | null {
   if (!spend && !extra) return null;
-  const percent = Number(extra?.utilization ?? spend?.percent);
-  if (!Number.isFinite(percent) || percent < 0) return null;
+  const rawPercent = extra?.utilization ?? spend?.percent;
+  const percent =
+    typeof rawPercent === "number" && Number.isFinite(rawPercent) && rawPercent >= 0
+      ? rawPercent
+      : null;
   const fallbackMoney = (amount: number | undefined): ClaudeMoney | undefined =>
     amount == null
       ? undefined
@@ -439,6 +461,10 @@ function spendMeter(
     enabled === false
       ? `disabled${disabledReason ? ` (${disabledReason.replace(/_/g, " ")})` : ""}`
       : null;
+  const detail = [used && limit ? `${used} / ${limit} used` : used ? `${used} used` : null, status]
+    .filter(Boolean)
+    .join(" · ") || null;
+  if (percent == null && detail == null) return null;
   return {
     name: "extra_usage",
     label: "extra usage",
@@ -446,9 +472,7 @@ function spendMeter(
     resetsAt: null,
     availableIn: null,
     windowSeconds: null,
-    detail: [used && limit ? `${used} / ${limit} used` : used ? `${used} used` : null, status]
-      .filter(Boolean)
-      .join(" · ") || null,
+    detail,
     affectsAvailability: false,
   };
 }
@@ -545,9 +569,7 @@ export async function collectClaudeProfile(
       base.windows = collectClaudeUsageWindows(cached);
       base.source = "oauth_usage(cache)";
       base.score = availabilityScore(base.windows);
-      base.requestAvailability = base.score == null
-        ? "unknown"
-        : base.score >= 100 ? "blocked" : "available";
+      base.requestAvailability = claudeRequestAvailability(cached, base.windows);
       return base;
     }
   }
@@ -575,9 +597,7 @@ export async function collectClaudeProfile(
         base.windows = collectClaudeUsageWindows(payload);
         base.source = "oauth_usage(refreshed)";
         base.score = availabilityScore(base.windows);
-        base.requestAvailability = base.score == null
-          ? "unknown"
-          : base.score >= 100 ? "blocked" : "available";
+        base.requestAvailability = claudeRequestAvailability(payload, base.windows);
         return base;
       }
     } else {
@@ -622,9 +642,7 @@ export async function collectClaudeProfile(
   base.windows = collectClaudeUsageWindows(payload);
   base.source = "oauth_usage";
   base.score = availabilityScore(base.windows);
-  base.requestAvailability = base.score == null
-    ? "unknown"
-    : base.score >= 100 ? "blocked" : "available";
+  base.requestAvailability = claudeRequestAvailability(payload, base.windows);
   return base;
 }
 

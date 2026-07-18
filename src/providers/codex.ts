@@ -83,12 +83,21 @@ function meterFromWindow(
   if (!w || typeof w.used_percent !== "number" || !Number.isFinite(w.used_percent) || w.used_percent < 0) {
     return null;
   }
-  const resetEpoch =
-    typeof w.reset_at === "number" && Number.isFinite(w.reset_at)
-      ? w.reset_at
-      : typeof w.reset_after_seconds === "number" && Number.isFinite(w.reset_after_seconds)
-        ? Math.floor(nowMs / 1000) + w.reset_after_seconds
-        : null;
+  let resetEpoch: number | null = null;
+  if (
+    typeof w.reset_at === "number" &&
+    Number.isFinite(w.reset_at) &&
+    isoFromEpochSec(w.reset_at)
+  ) {
+    resetEpoch = w.reset_at;
+  } else if (
+    typeof w.reset_after_seconds === "number" &&
+    Number.isFinite(w.reset_after_seconds) &&
+    w.reset_after_seconds >= 0
+  ) {
+    const candidate = Math.floor(nowMs / 1000) + w.reset_after_seconds;
+    if (isoFromEpochSec(candidate)) resetEpoch = candidate;
+  }
   const resetsAt = isoFromEpochSec(resetEpoch);
   return {
     name,
@@ -348,12 +357,12 @@ export function codexRequestAvailability(
   if (
     primaryBlocked ||
     activeModelLimit?.allowed === false ||
-    activeModelLimit?.limit_reached === true ||
-    score != null && score >= 100
+    activeModelLimit?.limit_reached === true
   ) return "blocked";
+  if (activeModelLimit?.allowed === true) return "available";
+  if (!activeModelLimit && data.rate_limit?.allowed === true) return "available";
+  if (score != null && score >= 100) return "blocked";
   if (
-    data.rate_limit?.allowed === true ||
-    activeModelLimit?.allowed === true ||
     score != null
   ) return "available";
   return "unknown";

@@ -1,4 +1,5 @@
 import {
+  busClearHandoff,
   busFileSize,
   busIsLive,
   busLiveOff,
@@ -6,17 +7,49 @@ import {
   busMessageForMe,
   busPollGrowth,
   busPull,
+  busReadHandoff,
   busRead,
   busResolveIdentity,
   busSend,
+  busSetWork,
+  busClearWork,
+  busWriteHandoff,
+  formatBusHandoff,
   formatBusLine,
   formatBusReadable,
 } from "./bus.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { home } from "./util.js";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
   console.log(`ok    ${msg}`);
+}
+
+{
+  const cwd = process.cwd();
+  const previous = process.env.LLMQUOTA_BUS_FROM;
+  const first = `codex/work-a-${Date.now()}`;
+  const second = `claude/work-b-${Date.now()}`;
+  try {
+    process.env.LLMQUOTA_BUS_FROM = first;
+    const work = busSetWork({ summary: "edit bus", files: ["src/bus.ts"] });
+    assert(work.presence.work?.files[0] === "src/bus.ts", "busSetWork publishes repo-relative file");
+    const overlap = busSetWork({
+      from: second,
+      summary: "review bus",
+      files: ["src/bus.ts"],
+    });
+    assert(overlap.conflicts.some((peer) => peer.id === first), "busSetWork reports overlapping peer");
+    assert(busClearWork(first), "busClearWork releases active lane");
+    assert(busClearWork(second), "busClearWork releases second lane");
+    assert(cwd === process.cwd(), "work claim keeps cwd unchanged");
+  } finally {
+    if (previous === undefined) delete process.env.LLMQUOTA_BUS_FROM;
+    else process.env.LLMQUOTA_BUS_FROM = previous;
+  }
 }
 
 const token = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -111,6 +144,26 @@ assert(formatBusReadable(msgs).includes(token), "formatBusReadable includes text
   busSend({ text: `grow-${token}`, to: "all", from: "test" });
   const growth = busPollGrowth(before);
   assert(growth.newMessages.some((m) => m.text === `grow-${token}`), "busPollGrowth");
+}
+
+{
+  const cwd = mkdtempSync(join(tmpdir(), "llmquota-handoff-"));
+  try {
+    const handoff = busWriteHandoff({
+      cwd,
+      from: "codex/takeover-test",
+      text: "objective=test; state=parser fixed; tests=focused green; next=full suite",
+    });
+    assert(handoff.project.startsWith("llmquota-handoff-"), "handoff scopes to workspace");
+    assert(busReadHandoff(cwd)?.text.includes("parser fixed") === true,
+      "handoff restores latest checkpoint");
+    assert(formatBusHandoff(handoff).includes("checkpoint may be stale"),
+      "handoff warns replacement to verify current state");
+    assert(busClearHandoff(cwd), "handoff clears after completed work");
+    assert(busReadHandoff(cwd) == null, "cleared handoff stays absent");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 }
 
 console.log("\nall bus tests passed");

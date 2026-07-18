@@ -83,6 +83,8 @@ export function frame(
     tick?: number;
     nextRefreshIn?: number;
     anon?: boolean;
+    interactingProviders?: string[];
+    reducedMotion?: boolean;
   },
 ): FrameResult {
   const tick = opts.tick ?? 0;
@@ -90,6 +92,7 @@ export function frame(
   const showHelp = Boolean(opts.showHelp);
   const showBus = Boolean(opts.showBus);
   const shoutDraft = opts.shoutDraft ?? null;
+  const interactingProviders = new Set(opts.interactingProviders ?? []);
   if (opts.anon && report) report = anonymousReport(report);
   const providers = report?.providers ?? [];
   const focusIdx = opts.focus ?? 0;
@@ -284,6 +287,8 @@ export function frame(
             hoverIdx === providerIndex,
             tick,
             report.checkedAt,
+            interactingProviders.has(p.id),
+            Boolean(opts.reducedMotion),
           ),
           index: providerIndex,
         }));

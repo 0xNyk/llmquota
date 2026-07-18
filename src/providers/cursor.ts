@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, win32 } from "node:path";
-import type { Meter, ProviderSnapshot } from "../types.js";
+import type { Meter, ProviderSnapshot, RequestAvailability } from "../types.js";
 import { baseSnapshot } from "../snapshot.js";
 import {
   availableInFromIso,
@@ -56,6 +56,8 @@ interface PeriodUsage {
   autoModelSelectedDisplayMessage?: string;
   namedModelSelectedDisplayMessage?: string;
   autoBucketModels?: string[];
+  /** Cursor's on-demand usage switch returned beside spendLimitUsage. */
+  enabled?: boolean;
 }
 
 const CURSOR_USAGE_FIELDS = [
@@ -67,6 +69,7 @@ const CURSOR_USAGE_FIELDS = [
   "autoModelSelectedDisplayMessage",
   "namedModelSelectedDisplayMessage",
   "autoBucketModels",
+  "enabled",
 ] as const;
 
 export function isCursorUsagePayload(value: unknown): value is PeriodUsage {
@@ -246,13 +249,34 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
   const windows = collectCursorUsageWindows(data, selection.model);
   base.windows = windows;
   base.score = availabilityScore(windows);
-  base.requestAvailability = base.score == null
-    ? "unknown"
-    : base.score >= 100 ? "blocked" : "available";
+  base.requestAvailability = cursorRequestAvailability(data, windows);
 
   const msg = cursorUsageHint(data, selection.model);
   if (msg) base.hint = msg;
   return base;
+}
+
+export function cursorRequestAvailability(
+  data: PeriodUsage,
+  windows: Meter[],
+): RequestAvailability {
+  const includedScore = availabilityScore(windows);
+  if (includedScore == null) return "unknown";
+  if (includedScore < 100) return "available";
+  if (data.enabled !== true) return "blocked";
+
+  const spend = data.spendLimitUsage;
+  const used = spend?.individualUsed ?? spend?.totalSpend;
+  const limit = spend?.individualLimit;
+  if (
+    typeof used !== "number" ||
+    !Number.isFinite(used) ||
+    used < 0 ||
+    typeof limit !== "number" ||
+    !Number.isFinite(limit) ||
+    limit <= 0
+  ) return "unknown";
+  return used < limit ? "available" : "blocked";
 }
 
 function cursorUsesAutoPool(data: PeriodUsage, activeModel: string | null): boolean | null {

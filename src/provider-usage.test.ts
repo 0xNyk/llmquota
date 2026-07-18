@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import {
+  claudeRequestAvailability,
   collectClaudeUsageWindows,
   isClaudeUsagePayload,
   reconcileClaudeActiveProfile,
@@ -16,6 +17,7 @@ import {
 } from "./providers/codex.js";
 import {
   collectCursorUsageWindows,
+  cursorRequestAvailability,
   cursorUsageHint,
   cursorInstalled,
   cursorStateDbCandidates,
@@ -30,6 +32,7 @@ import {
   hermesGlobalAuthPath,
   hermesProviderAccessToken,
   hermesPaidAccessAllowed,
+  hermesRequestAvailability,
   hermesSubscriptionLabels,
   hermesUsageScore,
   isNousAccountPayload,
@@ -47,6 +50,7 @@ import {
   parseCursorModelConfig,
   parseJsonModelConfig,
   parseTomlModelConfig,
+  readClaudeActiveSelection,
   readCodexActiveSelection,
   readCursorActiveSelection,
   readGrokActiveSelection,
@@ -125,6 +129,26 @@ providers: {}
     assert(selectedHermes.provider === "nous" && selectedHermes.model === "hermes-model",
       "Hermes active selection reads its runtime config file");
 
+    const claudeCwd = join(dir, "claude-workspace");
+    const claudeProject = join(dir, "projects", claudeCwd.replace(/\//g, "-"));
+    mkdirSync(claudeProject, { recursive: true });
+    writeFileSync(join(dir, "settings.json"), '{"model":"configured-claude"}');
+    writeFileSync(join(claudeProject, "session.jsonl"), [
+      JSON.stringify({
+        type: "assistant",
+        cwd: claudeCwd,
+        message: { model: "claude-opus-4-8" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        cwd: claudeCwd,
+        message: { model: "<synthetic>" },
+        error: "rate_limit",
+      }),
+    ].join("\n"));
+    assert(readClaudeActiveSelection(dir, claudeCwd).model === "claude-opus-4-8",
+      "Claude latest real workspace model overrides configured default");
+
     writeFileSync(join(dir, "config.toml"), 'model = "configured-codex"\n');
     const sessionDir = join(dir, "sessions", "2026", "07", "15");
     mkdirSync(sessionDir, { recursive: true });
@@ -145,6 +169,18 @@ providers: {}
     const selectedGrok = readGrokActiveSelection(dir);
     assert(selectedGrok.provider === "xai" && selectedGrok.model === "grok-live",
       "Grok active session model overrides configured default");
+
+    rmSync(join(dir, "active_sessions.json"));
+    const grokCwd = join(dir, "workspace");
+    const grokSession = join(dir, "sessions", encodeURIComponent(grokCwd), "session-1");
+    mkdirSync(grokSession, { recursive: true });
+    writeFileSync(join(grokSession, "summary.json"), JSON.stringify({
+      info: { cwd: grokCwd },
+      current_model_id: "grok-4.5",
+      last_active_at: "2026-07-15T12:00:00Z",
+    }));
+    assert(readGrokActiveSelection(dir, grokCwd).model === "grok-4.5",
+      "Grok latest workspace session model detected from current CLI summary");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -211,6 +247,21 @@ providers: {}
 }
 
 {
+  const now = Date.parse("2026-07-15T10:00:00Z");
+  const windows = collectCodexUsageWindows({
+    rate_limit: {
+      primary_window: {
+        used_percent: 12,
+        reset_at: 9e15,
+        reset_after_seconds: 1800,
+      },
+    },
+  }, now);
+  assert(windows[0]?.resetsAt === "2026-07-15T10:30:00.000Z",
+    "Codex valid relative reset survives a malformed absolute reset");
+}
+
+{
   const denied = {
     rate_limit: {
       allowed: false,
@@ -273,6 +324,15 @@ providers: {}
     "Codex unrelated exhausted model and code-review pools do not block the active model");
   assert(codexRequestAvailability(modelOnlyDenied, "gpt-5.6-sol", 17) === "available",
     "Codex explicit primary allowance proves the active model is available");
+  const roundedFull = {
+    rate_limit: {
+      allowed: true,
+      limit_reached: false,
+      primary_window: { used_percent: 100, limit_window_seconds: 604800 },
+    },
+  };
+  assert(codexRequestAvailability(roundedFull, "gpt-5.6-sol", 100) === "available",
+    "Codex explicit allowance outranks a rounded 100% meter");
   const spark = collectCodexUsageWindows(modelOnlyDenied, Date.now(), "gpt-5.3-codex-spark");
   assert(codexUsageScore(modelOnlyDenied, spark, "gpt-5.3-codex-spark") === 100,
     "Codex matching exhausted model pool blocks the active model");
@@ -322,12 +382,37 @@ providers: {}
     "Claude extra-usage disabled reason retained");
   assert(spend?.affectsAvailability === false,
     "Claude extra-usage billing does not claim request blocking");
+  const amountOnly = collectClaudeUsageWindows({
+    spend: {
+      used: { amount_minor: 1250, currency: "USD", exponent: 2 },
+      limit: { amount_minor: 5000, currency: "USD", exponent: 2 },
+    },
+  }).find((w) => w.name === "extra_usage");
+  assert(amountOnly?.usedPercent == null && /\$12\.50.*\$50\.00/.test(amountOnly?.detail || ""),
+    "Claude keeps authoritative extra-usage amounts when percent is absent");
   assert(windows.some((w) => w.name === "weekly_scoped" && w.label === "Fable"),
     "Claude active dynamic scoped limits detected");
   assert(!windows.some((w) => w.name === "inactive_pool"),
     "Claude inactive dynamic limits omitted");
   assert(windows.filter((w) => w.name === "five_hour").length === 1,
     "Claude dynamic limits deduplicate legacy windows");
+
+  const paidPayload = {
+    seven_day: { utilization: 100, resets_at: "2026-07-20T12:00:00Z" },
+    extra_usage: { is_enabled: true, utilization: 42 },
+  };
+  assert(
+    claudeRequestAvailability(paidPayload, collectClaudeUsageWindows(paidPayload)) === "available",
+    "Claude enabled extra usage with measured headroom prevents a false cooldown",
+  );
+  const paidUnknown = {
+    seven_day: { utilization: 100, resets_at: "2026-07-20T12:00:00Z" },
+    extra_usage: { is_enabled: true },
+  };
+  assert(
+    claudeRequestAvailability(paidUnknown, collectClaudeUsageWindows(paidUnknown)) === "unknown",
+    "Claude does not invent paid headroom when its utilization is missing",
+  );
 }
 
 {
@@ -410,6 +495,11 @@ providers: {}
   assert(/Nous paid credits \$7\.50 remaining · live/.test(
     windows.find((w) => w.name === "topup")?.detail || ""),
     "Hermes paid-credit remainder retained without fake percent");
+  const zeroRollover = buildHermesMeters({
+    subscription: { monthly_credits: 20, credits_remaining: 5, rollover_credits: 0 },
+  });
+  assert(!/rollover/.test(zeroRollover[0]?.detail || ""),
+    "Hermes zero rollover is omitted");
   assert(/cached 5h ago/.test(nousPurchasedCreditMeter({
     purchased_credits_remaining: 33.1897,
   }, 5 * 3600_000)?.detail || ""),
@@ -436,12 +526,54 @@ providers: {}
     hermesPaidAccessAllowed({ paid_service_access: { allowed: true, paid_access: false } }) === true,
     "Hermes allowed entitlement wins over legacy paid_access conflict",
   );
+  assert(
+    hermesRequestAvailability({ paid_service_access: { allowed: true } }, 100, null) === "available",
+    "Hermes explicit paid entitlement outranks a rounded 100% meter",
+  );
+  const memberSpendPayload = {
+    paid_service_access: {
+      member_spend_usd: "12.50",
+      member_spend_cap_usd: 20,
+      member_spend_cap_remaining_usd: "7.50",
+      member_spend_cap_exceeded: false,
+    },
+  };
+  const memberSpend = buildHermesMeters(memberSpendPayload)
+    .find((w) => w.name === "member_spend");
+  assert(memberSpend?.usedPercent === 62.5 && /\$12\.50.*\$20\.00/.test(memberSpend.detail || ""),
+    "Hermes member spend and cap retain authoritative decimal units");
+  const uncappedSpend = buildHermesMeters({
+    paid_service_access: { member_spend_usd: "666.79", member_spend_cap_usd: null },
+  }).find((w) => w.name === "member_spend");
+  assert(uncappedSpend?.usedPercent == null && /\$666\.79 member spend/.test(uncappedSpend?.detail || ""),
+    "Hermes member spend remains visible without inventing a cap percentage");
+  const capped = { paid_service_access: { member_spend_cap_exceeded: true } };
+  assert(hermesAvailabilityScore(capped, [], null) === 100 &&
+    hermesRequestAvailability(capped, null, null) === "blocked",
+  "Hermes explicit member spend cap exhaustion blocks unknown entitlement");
+  assert(/member spend cap reached/i.test(hermesEntitlementHint(capped) || ""),
+    "Hermes member spend cap explains the billing block");
+  assert(hermesRequestAvailability({
+    paid_service_access: { allowed: true, member_spend_cap_exceeded: true },
+  }, 100, null) === "available",
+  "Hermes aggregate allowance wins over a contradictory cap subfield");
 
   const malformed = buildHermesMeters({
     subscription: { monthly_credits: Number.NaN, credits_remaining: 10 },
     paid_service_access: { total_usable_credits: Number.NaN },
   });
   assert(malformed.length === 0, "Hermes malformed monetary facts stay unknown");
+  assert(buildHermesMeters({
+    subscription: { monthly_credits: 20, credits_remaining: -1 },
+  }).length === 0, "Hermes negative subscription balance stays unknown");
+  assert(buildHermesMeters({
+    paid_service_access: { purchased_credits_remaining: -1, total_usable_credits: -2 },
+  }).length === 0, "Hermes negative paid-credit balances stay unknown");
+  const aggregateFallback = buildHermesMeters({
+    paid_service_access: { purchased_credits_remaining: 3, total_usable_credits: -2 },
+  });
+  assert(/\$3\.00 remaining/.test(aggregateFallback[0]?.detail || ""),
+    "Hermes valid paid credits survive a malformed aggregate balance");
 
   const accessFallback = buildHermesMeters({
     subscription: { monthly_credits: 20 },
@@ -577,6 +709,30 @@ providers: {}
     "Cursor on-demand spend and cap detected");
   assert(billed?.affectsAvailability === false,
     "Cursor on-demand billing does not claim request blocking");
+
+  const exhaustedIncluded = collectCursorUsageWindows({
+    planUsage: { apiPercentUsed: 100 },
+    enabled: true,
+    spendLimitUsage: { individualUsed: 500, individualLimit: 2000 },
+  }, "claude-fable-5");
+  assert(cursorRequestAvailability({
+    planUsage: { apiPercentUsed: 100 },
+    enabled: true,
+    spendLimitUsage: { individualUsed: 500, individualLimit: 2000 },
+  }, exhaustedIncluded) === "available",
+  "Cursor enabled on-demand headroom prevents a false included-pool cooldown");
+  assert(cursorRequestAvailability({
+    planUsage: { apiPercentUsed: 100 },
+    enabled: true,
+    spendLimitUsage: { individualUsed: 2000, individualLimit: 2000 },
+  }, exhaustedIncluded) === "blocked",
+  "Cursor exhausted on-demand cap remains blocked");
+  assert(cursorRequestAvailability({
+    planUsage: { apiPercentUsed: 100 },
+    enabled: true,
+    spendLimitUsage: { individualUsed: 500, individualLimit: null },
+  }, exhaustedIncluded) === "unknown",
+  "Cursor does not infer unlimited paid usage from a missing cap");
 }
 
 {

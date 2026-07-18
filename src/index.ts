@@ -3,14 +3,20 @@ import { formatStatusline, hopTarget, openHints } from "./arena-moves.js";
 import { busArmAll, busDisarmAll } from "./bus-arm.js";
 import {
   busAgentPrompt,
+  busClearHandoff,
+  busClearWork,
   busDefaultFrom,
   busIsLive,
   busLiveInfo,
   busNotifyExternal,
   busPull,
   busPullContext,
+  busReadHandoff,
   busRead,
   busSend,
+  busSetWork,
+  busWriteHandoff,
+  formatBusHandoff,
   busWatch,
   busWho,
   formatBusLine,
@@ -122,6 +128,10 @@ Usage:
   llmquota bus          show recent ring messages
   llmquota bus send [-t all|id] [-f name] "text"   shout (id = session or cli group)
   llmquota bus pull [-f name]   unread addressed to you (or all)
+  llmquota bus handoff "objective=…; state=…; files=…; tests=…; next=…"
+  llmquota bus resume   read latest repo takeover checkpoint
+  llmquota bus work [-f name] -m "task" <file|dir>...   publish advisory write lane
+  llmquota bus done [-f name]  clear this session's write lane
   llmquota bus who      list session ids + same-directory / same-repo peers
   llmquota bus watch    tail new messages
   llmquota bus prompt   one-liner for agents (paste once per session)
@@ -281,6 +291,9 @@ async function runBusCommand(argv: string[], json: boolean): Promise<void> {
         process.stdout.write(
           `  ${mark} ${s.id.padEnd(26)}  ${loc.padEnd(16)}  ${s.seenAt.slice(11, 19)}\n`,
         );
+        if (s.work) {
+          process.stdout.write(`      working: ${s.work.summary} · ${s.work.files.join(", ")}\n`);
+        }
       }
     }
     if (w.recentFrom.length) {
@@ -295,6 +308,88 @@ async function runBusCommand(argv: string[], json: boolean): Promise<void> {
   if (sub === "hook-context") {
     // Used by examples/bus-hook.sh — only when LIVE; identity from env / CLAUDE_CONFIG_DIR
     process.stdout.write(busPullContext(undefined, { onlyWhenLive: true }));
+    return;
+  }
+
+  if (sub === "handoff") {
+    if (rest[1] === "clear") {
+      const cleared = busClearHandoff();
+      if (json) process.stdout.write(JSON.stringify({ cleared }) + "\n");
+      else process.stdout.write(cleared ? "handoff cleared\n" : "no handoff for this repo\n");
+      return;
+    }
+    const { from, text } = parseBusSendArgs(["send", ...rest.slice(1)]);
+    if (!text) {
+      process.stderr.write(
+        'usage: llmquota bus handoff [-f name] "objective=…; state=…; files=…; tests=…; next=…"\n',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const handoff = busWriteHandoff({ text, from });
+    busSend({
+      from: handoff.from,
+      to: "repo",
+      text: `takeover checkpoint updated for ${handoff.project} · run: llmquota bus resume`,
+    });
+    if (json) process.stdout.write(JSON.stringify(handoff, null, 2) + "\n");
+    else process.stdout.write(formatBusHandoff(handoff) + "\n");
+    return;
+  }
+
+  if (sub === "resume") {
+    const handoff = busReadHandoff();
+    if (json) {
+      process.stdout.write(JSON.stringify({ handoff }, null, 2) + "\n");
+      return;
+    }
+    process.stdout.write(
+      handoff
+        ? formatBusHandoff(handoff) + "\n"
+        : "no takeover checkpoint for this repo · inspect git status and current task\n",
+    );
+    return;
+  }
+
+  if (sub === "work") {
+    let from: string | undefined;
+    let summary = "";
+    const files: string[] = [];
+    for (let i = 1; i < rest.length; i++) {
+      const a = rest[i]!;
+      if ((a === "-f" || a === "--from") && rest[i + 1]) from = rest[++i]!;
+      else if ((a === "-m" || a === "--message") && rest[i + 1]) summary = rest[++i]!;
+      else files.push(a);
+    }
+    if (!summary || !files.length) {
+      process.stderr.write('usage: llmquota bus work [-f name] -m "task" <file|dir>...\n');
+      process.exitCode = 1;
+      return;
+    }
+    const result = busSetWork({ summary, files, from });
+    busSend({
+      from: result.presence.id,
+      to: "repo",
+      text: `working: ${result.presence.work!.summary} · files: ${result.presence.work!.files.join(", ")}`,
+    });
+    if (json) process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    else {
+      process.stdout.write(`work published · ${result.presence.work!.files.join(", ")}\n`);
+      for (const peer of result.conflicts) {
+        process.stdout.write(`WARNING overlap with ${peer.id}: ${peer.work!.files.join(", ")}\n`);
+      }
+    }
+    return;
+  }
+
+  if (sub === "done") {
+    let from: string | undefined;
+    for (let i = 1; i < rest.length; i++) {
+      if ((rest[i] === "-f" || rest[i] === "--from") && rest[i + 1]) from = rest[++i]!;
+    }
+    const cleared = busClearWork(from);
+    if (json) process.stdout.write(JSON.stringify({ cleared }) + "\n");
+    else process.stdout.write(cleared ? "work lane cleared\n" : "no active work lane\n");
     return;
   }
 

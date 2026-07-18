@@ -50,7 +50,22 @@ llmquota bus send -t @myproject "same project name"
 llmquota bus send -t claude "all Claude sessions"
 llmquota bus send -t claude/work "one silo"
 LLMQUOTA_BUS_FROM=claude/personal llmquota bus pull
+llmquota bus handoff "objective=fix auth; state=parser done; files=src/auth.ts; tests=unit green; next=integration"
+llmquota bus resume                       # replacement CLI reads latest repo checkpoint
+llmquota bus work -m "fix auth parser" src/auth.ts test/auth.test.ts
+llmquota bus done                         # release the advisory write lane
 ```
+
+Before editing, each session can publish the files or directories it intends to touch.
+`bus who` shows active work, and `bus work` warns when another same-repo session claims an
+overlapping path. Claims are advisory coordination signals—not locks—so agents should message
+the named peer before continuing through a warning.
+
+For rate-limit takeover, agents refresh a repo-scoped handoff after meaningful changes and
+before long calls. `bus resume` gives the next CLI the last written objective, state, files,
+tests, and next action. It is a local checkpoint, not a transcript recorder: anything not
+written before an abrupt stop cannot be recovered. Clear completed work with
+`llmquota bus handoff clear`.
 
 ```bash
 ./llmquota bus send -t all "auth module ready — check types"
@@ -61,6 +76,8 @@ LLMQUOTA_BUS_FROM=claude/personal llmquota bus pull
 ```
 
 Inbound shouts toast in the TUI and fire a tmux banner / macOS notification when LIVE.
+The sender card—and an explicitly addressed recipient card—briefly pulse when sessions interact.
+Set `LLMQUOTA_REDUCE_MOTION=1` for a short static link marker instead of animation.
 
 TUI: `s` shout · `b` toggle bus strip (auto-opens on new traffic).
 
@@ -192,7 +209,7 @@ TUI: click / double-click / wheel / hover — or focus with `1`–`9`, then `c` 
 {
   "statusLine": {
     "type": "command",
-    "command": "/path/to/llmquota/examples/statusline.sh"
+    "command": "/absolute/path/to/llmquota/examples/statusline.sh"
   }
 }
 ```

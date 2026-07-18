@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import type { Meter, ProviderSnapshot } from "../types.js";
+import type { Meter, ProviderSnapshot, RequestAvailability } from "../types.js";
 import { baseSnapshot, isExpiredAt } from "../snapshot.js";
 import {
   availableInFromIso,
@@ -133,6 +133,10 @@ interface NousPaidAccess {
   subscription_credits_remaining?: number;
   purchased_credits_remaining?: number;
   total_usable_credits?: number;
+  member_spend_cap_exceeded?: boolean;
+  member_spend_cap_usd?: number | string | null;
+  member_spend_usd?: number | string | null;
+  member_spend_cap_remaining_usd?: number | string | null;
 }
 
 interface NousAccountPayload {
@@ -552,7 +556,7 @@ async function refreshNousAccess(
 }
 
 function usd(n: number | null | undefined): string | null {
-  if (n == null || !Number.isFinite(n)) return null;
+  if (n == null || !Number.isFinite(n) || n < 0) return null;
   return `$${n.toFixed(2)}`;
 }
 
@@ -568,6 +572,12 @@ function compactAge(ageMs: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+function nonnegativeDecimal(value: number | string | null | undefined): number | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  const number = typeof value === "string" && value.trim() ? Number(value) : value;
+  return typeof number === "number" && Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 export function nousPurchasedCreditMeter(
@@ -628,13 +638,16 @@ export function buildHermesMeters(payload: NousAccountPayload): Meter[] {
     Number.isFinite(sub.monthly_credits) &&
     sub.monthly_credits > 0 &&
     typeof subscriptionRemaining === "number" &&
-    Number.isFinite(subscriptionRemaining)
+    Number.isFinite(subscriptionRemaining) &&
+    subscriptionRemaining >= 0
   ) {
     const cap = sub.monthly_credits;
     const remaining = subscriptionRemaining;
     const used = Math.max(0, cap - remaining);
     const usedPercent = (used / cap) * 100;
-    const rollover = usd(sub.rollover_credits);
+    const rollover = typeof sub.rollover_credits === "number" && sub.rollover_credits > 0
+      ? usd(sub.rollover_credits)
+      : null;
     const resetsAt = normalizeIsoTimestamp(sub.current_period_end);
     meters.push({
       name: "subscription",
@@ -647,11 +660,13 @@ export function buildHermesMeters(payload: NousAccountPayload): Meter[] {
     });
   }
 
-  const purchased =
-    access?.purchased_credits_remaining ?? payload.purchased_credits_remaining ?? null;
-  const total = access?.total_usable_credits ?? purchased;
-  if (total != null && Number.isFinite(total)) {
-    const subscription = usd(access?.subscription_credits_remaining);
+  const purchased = nonnegativeDecimal(
+    access?.purchased_credits_remaining ?? payload.purchased_credits_remaining,
+  );
+  const aggregateTotal = nonnegativeDecimal(access?.total_usable_credits);
+  const total = aggregateTotal ?? purchased;
+  if (total != null) {
+    const subscription = usd(nonnegativeDecimal(access?.subscription_credits_remaining));
     const purchasedLabel = usd(purchased);
     const components = [
       subscription ? `subscription ${subscription}` : null,
@@ -667,6 +682,35 @@ export function buildHermesMeters(payload: NousAccountPayload): Meter[] {
       detail: purchased === total && purchasedLabel
         ? `Nous paid credits ${purchasedLabel} remaining · live`
         : `${usd(total)} usable${components.length ? ` (${components.join(" · ")})` : ""}`,
+      affectsAvailability: false,
+    });
+  }
+
+  const memberSpend = nonnegativeDecimal(access?.member_spend_usd);
+  const memberCap = nonnegativeDecimal(access?.member_spend_cap_usd);
+  const memberRemaining = nonnegativeDecimal(access?.member_spend_cap_remaining_usd);
+  const capExceeded = access?.member_spend_cap_exceeded === true;
+  if (memberSpend != null || memberCap != null || memberRemaining != null || capExceeded) {
+    const usedPercent = memberSpend != null && memberCap != null && memberCap > 0
+      ? (memberSpend / memberCap) * 100
+      : null;
+    const amounts = memberSpend != null && memberCap != null
+      ? `${usd(memberSpend)} / ${usd(memberCap)} member spend`
+      : memberSpend != null
+        ? `${usd(memberSpend)} member spend`
+        : memberRemaining != null
+          ? `${usd(memberRemaining)} member cap remaining`
+          : null;
+    meters.push({
+      name: "member_spend",
+      label: "member",
+      usedPercent,
+      resetsAt: null,
+      availableIn: null,
+      windowSeconds: null,
+      detail: [amounts, capExceeded ? "member spend cap exceeded" : null]
+        .filter(Boolean)
+        .join(" · ") || null,
       affectsAvailability: false,
     });
   }
@@ -688,9 +732,10 @@ export function hermesAvailabilityScore(
   windows: Meter[],
   totalUsableCredits: number | null,
 ): number | null {
-  return hermesPaidAccessAllowed(payload) === false
-    ? 100
-    : hermesUsageScore(windows, totalUsableCredits);
+  const allowed = hermesPaidAccessAllowed(payload);
+  if (allowed === false) return 100;
+  if (allowed == null && paidAccess(payload)?.member_spend_cap_exceeded === true) return 100;
+  return hermesUsageScore(windows, totalUsableCredits);
 }
 
 export function hermesEntitlementHint(payload: NousAccountPayload): string | null {
@@ -699,6 +744,9 @@ export function hermesEntitlementHint(payload: NousAccountPayload): string | nul
   const allowed = hermesPaidAccessAllowed(payload);
   const total = access?.total_usable_credits ?? payload.purchased_credits_remaining ?? null;
 
+  if (allowed !== true && access?.member_spend_cap_exceeded === true) {
+    return "Member spend cap reached — raise it in Nous Portal billing";
+  }
   if (allowed === false) {
     if (access?.reason === "no_usable_credits") {
       return "Credits depleted — top up at portal.nousresearch.com/billing";
@@ -918,15 +966,28 @@ function finalizeAccount(
   base.windows = buildHermesMeters(payload);
   const total = access?.total_usable_credits ?? payload.purchased_credits_remaining ?? null;
   base.score = hermesAvailabilityScore(payload, base.windows, total);
-  const allowed = hermesPaidAccessAllowed(payload);
-  base.requestAvailability = allowed === false || base.score === 100
-    ? "blocked"
-    : allowed === true || (typeof total === "number" && Number.isFinite(total) && total > 0) || base.score != null
-      ? "available"
-      : "unknown";
+  base.requestAvailability = hermesRequestAvailability(payload, base.score, total);
   base.hint = hermesEntitlementHint(payload);
 
   return base;
+}
+
+export function hermesRequestAvailability(
+  payload: NousAccountPayload,
+  score: number | null,
+  totalUsableCredits: number | null,
+): RequestAvailability {
+  const allowed = hermesPaidAccessAllowed(payload);
+  if (allowed === false) return "blocked";
+  if (allowed === true) return "available";
+  if (paidAccess(payload)?.member_spend_cap_exceeded === true) return "blocked";
+  if (
+    typeof totalUsableCredits === "number" &&
+    Number.isFinite(totalUsableCredits) &&
+    totalUsableCredits > 0
+  ) return "available";
+  if (score != null) return score >= 100 ? "blocked" : "available";
+  return "unknown";
 }
 
 function configuredProviderToken(provider: string): string | null {
