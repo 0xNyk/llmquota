@@ -2,7 +2,11 @@
 
 Fun terminal **roster** for Claude Code · Codex · Cursor · Grok · **Hermes** rate limits: who's installed, which provider/model is active, what's left on the plan, and when you can fight again.
 
+Every coding CLI meters you differently — Claude on a rolling window, Grok weekly, Codex and Cursor behind their own dashboards — and none of them tell you which one still has headroom *right now*. llmquota reads what's already on your machine and lines them all up on one screen, so you send in the fighter that can still go instead of hitting a wall mid-task.
+
 ```bash
+git clone https://github.com/0xNyk/llmquota.git
+cd llmquota
 pnpm install
 pnpm build            # once (or after pulling src changes)
 ./llmquota              # live TUI arena (default)
@@ -186,9 +190,17 @@ Optional `~/.config/llmquota/config.json`:
 - Set `includeNeedLogin: true` to list every silo shell waiting on `silo auth login`.
 - `claudeProfiles` allowlists silo names when set.
 
-## Privacy / OSS stance
+## When not to use this
 
-Currently a **private** repo while the collectors stabilize. MIT-licensed and structured to go public without a rewrite: no secrets in tree, documented undocumented APIs, fail-soft providers.
+- **You only run one CLI on one plan.** You already know your limit — this is for people juggling several.
+- **You want it to switch accounts or launch CLIs for you.** It won't. It reads and reports; you drive. (Use [silo](https://github.com/0xNyk/silo) to launch Claude as a profile.)
+- **You need a resident menubar app or daemon.** This is a foreground terminal roster, not a background service.
+- **You need official, audited numbers.** Several providers publish no usage API, so those meters are best-effort reads of undocumented endpoints and can drift when a vendor changes things. A provider it can't read is marked unknown, never guessed.
+- **You're on Node < 22 or a Windows-first setup.** It leans on the built-in `node:sqlite` and unix-style paths.
+
+## Privacy / stance
+
+Read-only: it reads local credential stores and calls provider usage endpoints — it never writes, refreshes, or rotates accounts. No secrets live in the tree, undocumented vendor endpoints are documented where they're used, and every collector fails soft. `--anon` (or `a` in the arena) hides identity, paths, referrals, and monetary detail for screenshots without changing the quota math.
 
 ## Referrals / affiliate codes
 
@@ -217,3 +229,7 @@ TUI: click / double-click / wheel / hover — or focus with `1`–`9`, then `c` 
 ## Related tools
 
 SessionWatcher (menubar), aistat, aiquota, tokmon — peers, not dependencies.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

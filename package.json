@@ -19,11 +19,24 @@
     "codex",
     "cursor",
     "grok",
+    "hermes",
     "rate-limit",
     "quota",
-    "cli"
+    "cli",
+    "tui"
   ],
   "author": "0xNyk",
+  "files": [
+    "dist",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts",
+    "llmquota",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
@@ -34,7 +47,8 @@
     "tui": "tsx src/index.ts tui",
     "test": "tsc && node dist/tui-mouse.test.js && node dist/catalog.test.js && node dist/tui-card-body.test.js && node dist/arena-moves.test.js && node dist/bus.test.js && node dist/provider-usage.test.js && node dist/grok-probe.test.js && node dist/reset-dates.test.js",
     "test:mouse": "tsc && node dist/tui-mouse.test.js",
-    "scan": "tsx src/index.ts scan"
+    "scan": "tsx src/index.ts scan",
+    "prepublishOnly": "pnpm test"
   },
   "engines": {
     "node": ">=22"
