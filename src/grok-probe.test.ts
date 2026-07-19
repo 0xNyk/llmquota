@@ -50,7 +50,7 @@ const billingLine = JSON.stringify({
   assert(snap.windows[0]?.usedPercent === 100 &&
     snap.windows[0]?.resetsAt?.startsWith("2026-07-20") === true,
     "Grok weekly percent and reset come from the provider-fetched record");
-  assert(snap.requestAvailability === "blocked" && availability(snap) === "tired",
+  assert(snap.requestAvailability === "blocked" && availability(snap, "2026-07-14T18:10:28Z") === "tired",
     "Grok recorded exhaustion remains blocking until its real weekly reset");
   assert(snap.subscription?.includes("SuperGrok Heavy") === true,
     "Grok subscription tier comes from the provider-fetched billing record");

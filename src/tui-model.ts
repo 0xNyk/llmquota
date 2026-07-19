@@ -47,7 +47,9 @@ export function parseAvailableIn(s: string | null | undefined): number | null {
 export function windowResetSec(w: Meter, checkedAt?: string | null): number | null {
   if (w.resetsAt) {
     const t = Date.parse(w.resetsAt);
-    if (!Number.isNaN(t)) return Math.max(0, (t - Date.now()) / 1000);
+    const nowMs =
+      checkedAt && !Number.isNaN(Date.parse(checkedAt)) ? Date.parse(checkedAt) : Date.now();
+    if (!Number.isNaN(t)) return Math.max(0, (t - nowMs) / 1000);
   }
   const parsed = parseAvailableIn(w.availableIn);
   if (parsed == null) return null;
@@ -237,7 +239,7 @@ export type Avail = "ready" | "soon" | "limping" | "tired" | "unknown" | "auth" 
 
 export const SOON_SEC = 48 * 3600;
 
-export function availability(p: ProviderSnapshot): Avail {
+export function availability(p: ProviderSnapshot, checkedAt?: string | null): Avail {
   if (!p.installed) return "missing";
   if (p.auth !== "ok") return "auth";
   if (p.error && !p.windows.length) return "unknown";
@@ -245,12 +247,12 @@ export function availability(p: ProviderSnapshot): Avail {
   if (st.kind === "ready") return "ready";
   if (st.kind === "unknown") return "unknown";
   if (st.kind === "warn") {
-    const sec = soonestResetSec(p);
+    const sec = soonestResetSec(p, checkedAt);
     if (sec != null && sec <= SOON_SEC) return "soon";
     return "limping";
   }
   if (st.kind === "ko") {
-    const sec = soonestResetSec(p);
+    const sec = soonestResetSec(p, checkedAt);
     if (sec != null && sec <= SOON_SEC) return "soon";
     return "tired";
   }
