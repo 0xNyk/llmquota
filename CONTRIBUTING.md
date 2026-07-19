@@ -1,21 +1,22 @@
 # Contributing
 
-Thanks for interest. This repo is **private** while collectors stabilize; contributions are welcome from collaborators with access.
+Thanks for the interest. Issues and PRs welcome — collectors lean on undocumented vendor endpoints, so real-world breakage reports are especially useful.
 
 ## Dev
 
 ```bash
 pnpm install
-./llmquota
-./llmquota --json
-./node_modules/.bin/tsc --noEmit
+pnpm build            # compile to dist/
+./llmquota            # run the arena
+./llmquota --json     # scriptable output
+pnpm test             # tsc + the whole suite
 ```
 
 Node **22+** required (`node:sqlite`).
 
 ## Scope
 
-- Read-only usage / install / auth status across Claude · Codex · Cursor · Grok
+- Read-only usage / install / auth status across Claude · Codex · Cursor · Grok · Hermes
 - Fun human roster + deadpan `--json`
 - **Out of scope:** account switching, menubar apps, burning unused budget
 
