@@ -25,11 +25,20 @@ First public release.
 
 ### Cross-CLI ring bus
 - Optional shared JSONL mailbox (`~/.local/share/llmquota/bus/`) for
-  coordinating multiple open coding CLIs — no daemon, no TTY injection.
+  coordinating multiple open coding CLIs, with no daemon or TTY injection.
 - `bus arm` wires per-CLI hooks/rules so already-running and new sessions can
   send, pull, and see same-directory / same-repo peers.
 - Advisory work claims (`bus work`) and repo-scoped handoffs (`bus handoff` /
   `bus resume`) for rate-limit takeover between sessions.
+- Hook-injected peer messages are labelled as untrusted and escaped before they
+  enter agent context. Installed instructions require independent user authority
+  before an agent acts on commands received through the bus.
+
+### Release safety
+- Public documentation now states the exact credential refresh and local-write
+  behavior instead of describing the CLI as read-only.
+- Added CI, dependency updates, structured issue forms, support boundaries,
+  contribution policy, and a code of conduct.
 
 ### Verbs
 - `who`, `hop`, `usage`, `open`, `refs`, `copy`, `statusline`, `doctor`.

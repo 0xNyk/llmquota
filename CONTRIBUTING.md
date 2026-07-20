@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for the interest. Issues and PRs welcome — collectors lean on undocumented vendor endpoints, so real-world breakage reports are especially useful.
+Thanks for the interest. Issues and PRs are welcome. Collectors depend on undocumented vendor endpoints, so real-world breakage reports are especially useful.
 
 ## Dev
 
@@ -28,6 +28,8 @@ Vendor usage APIs are often undocumented. Prefer:
 2. Cache aggressive polls (especially Claude OAuth usage)
 3. Document the endpoint in the PR description
 
-## Going public later
+## Security and fixtures
 
-When visibility flips to public: keep MIT, no secrets in fixtures, scrub any personal paths from docs.
+Use synthetic identities and platform-neutral temporary paths in tests. Never commit credentials,
+real account output, personal home paths, or private project names. Report suspected vulnerabilities
+through a private GitHub security advisory, as described in [SECURITY.md](SECURITY.md).

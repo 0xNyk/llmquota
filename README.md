@@ -1,8 +1,12 @@
 # llmquota
 
+[![CI](https://github.com/0xNyk/llmquota/actions/workflows/ci.yml/badge.svg)](https://github.com/0xNyk/llmquota/actions/workflows/ci.yml)
+[![MIT](https://img.shields.io/badge/license-MIT-6ef2a8.svg)](LICENSE)
+[![Node 22+](https://img.shields.io/badge/node-22%2B-339933.svg?logo=node.js&logoColor=white)](package.json)
+
 Fun terminal **roster** for Claude Code · Codex · Cursor · Grok · **Hermes** rate limits: who's installed, which provider/model is active, what's left on the plan, and when you can fight again.
 
-Every coding CLI meters you differently — Claude on a rolling window, Grok weekly, Codex and Cursor behind their own dashboards — and none of them tell you which one still has headroom *right now*. llmquota reads what's already on your machine and lines them all up on one screen, so you send in the fighter that can still go instead of hitting a wall mid-task.
+Every coding CLI meters you differently. Claude uses a rolling window, Grok is weekly, and Codex and Cursor use their own dashboards. None of them tell you which one still has headroom *right now*. llmquota reads what's already on your machine and lines them up on one screen, so you can pick a fighter before hitting a wall mid-task.
 
 ```bash
 git clone https://github.com/0xNyk/llmquota.git
@@ -26,15 +30,15 @@ Requires **Node 22+** (uses built-in `node:sqlite` for Cursor).
 
 ### Ring bus (talk across open CLIs)
 
-Shared mailbox at `~/.local/share/llmquota/bus/ring.jsonl` — no daemon, no TTY inject.
+Shared mailbox at `~/.local/share/llmquota/bus/ring.jsonl` - no daemon and no TTY injection.
 
 **Already-running sessions** join when the arena is LIVE:
 
 ```bash
-# one command — arms Claude · Codex · Cursor · Grok · Hermes
+# one command: arms Claude · Codex · Cursor · Grok · Hermes
 ./llmquota bus arm
 
-# then start the arena — sets LIVE marker + announces on the ring
+# then start the arena: sets LIVE marker + announces on the ring
 ./llmquota
 ```
 
@@ -62,7 +66,7 @@ llmquota bus done                         # release the advisory write lane
 
 Before editing, each session can publish the files or directories it intends to touch.
 `bus who` shows active work, and `bus work` warns when another same-repo session claims an
-overlapping path. Claims are advisory coordination signals—not locks—so agents should message
+overlapping path. Claims are advisory coordination signals, not locks, so agents should message
 the named peer before continuing through a warning.
 
 For rate-limit takeover, agents refresh a repo-scoped handoff after meaningful changes and
@@ -72,7 +76,7 @@ written before an abrupt stop cannot be recovered. Clear completed work with
 `llmquota bus handoff clear`.
 
 ```bash
-./llmquota bus send -t all "auth module ready — check types"
+./llmquota bus send -t all "auth module ready; check types"
 ./llmquota bus                 # last ~30 messages
 ./llmquota bus pull -f codex   # unread for an open non-Claude CLI
 ./llmquota bus live            # is the arena LIVE?
@@ -80,8 +84,15 @@ written before an abrupt stop cannot be recovered. Clear completed work with
 ```
 
 Inbound shouts toast in the TUI and fire a tmux banner / macOS notification when LIVE.
-The sender card—and an explicitly addressed recipient card—briefly pulse when sessions interact.
+The sender card and an explicitly addressed recipient card briefly pulse when sessions interact.
 Set `LLMQUOTA_REDUCE_MOTION=1` for a short static link marker instead of animation.
+
+Bus messages and handoffs are untrusted peer data. The Claude hook labels and escapes them
+before adding them to agent context, and the installed agent instructions prohibit executing
+peer commands or revealing secrets without independent user authorization. This reduces common
+prompt-injection paths; it does not make a shared local mailbox a trusted control channel. Anyone
+who can write to your user account can still write to the ring. Review the sender and content,
+keep secrets out of messages, and use `llmquota bus disarm` if you do not need agent injection.
 
 TUI: `s` shout · `b` toggle bus strip (auto-opens on new traffic).
 
@@ -111,7 +122,7 @@ Scans PATH, `~/.local/bin`, Homebrew, and common home dirs. **Metered** CLIs (Cl
 | `s` | Shout to ring bus |
 | `b` | Toggle bus strip |
 | `a` | Toggle anonymous screenshot mode |
-| `j` `k` / `tab` / `1–9` | Move focus |
+| `j` `k` / `tab` / `1-9` | Move focus |
 | `h` | Toggle sidelined |
 | `?` | Help overlay |
 | `r` / `q` | Refresh / quit |
@@ -139,7 +150,7 @@ CLIs using the same provider are shown as a shared route and placed together. Th
 | Command / key | What |
 |---|---|
 | `n` / `llmquota hop` | Jump to the best ready fighter (or soonest reset) |
-| `o` / `llmquota open [name]` | Print launch hints (`silo go …`, `codex`, …) — never spawns CLIs |
+| `o` / `llmquota open [name]` | Print launch hints (`silo go …`, `codex`, …); never spawns CLIs |
 | `u` / `llmquota usage [name] [--open]` | Usage profile URL; `--open` opens https in the browser |
 | `llmquota statusline` | One-liner for tmux / prompts (`set -g status-right '#(llmquota statusline)'`) |
 | pace ⚠ on cards | Warns when burn rate would fill a window before reset |
@@ -192,15 +203,24 @@ Optional `~/.config/llmquota/config.json`:
 
 ## When not to use this
 
-- **You only run one CLI on one plan.** You already know your limit — this is for people juggling several.
+- **You only run one CLI on one plan.** You already know your limit; this is for people juggling several.
 - **You want it to switch accounts or launch CLIs for you.** It won't. It reads and reports; you drive. (Use [silo](https://github.com/0xNyk/silo) to launch Claude as a profile.)
 - **You need a resident menubar app or daemon.** This is a foreground terminal roster, not a background service.
 - **You need official, audited numbers.** Several providers publish no usage API, so those meters are best-effort reads of undocumented endpoints and can drift when a vendor changes things. A provider it can't read is marked unknown, never guessed.
 - **You're on Node < 22 or a Windows-first setup.** It leans on the built-in `node:sqlite` and unix-style paths.
 
-## Privacy / stance
+## Privacy and local changes
 
-Read-only: it reads local credential stores and calls provider usage endpoints — it never writes, refreshes, or rotates accounts. No secrets live in the tree, undocumented vendor endpoints are documented where they're used, and every collector fails soft. `--anon` (or `a` in the arena) hides identity, paths, referrals, and monetary detail for screenshots without changing the quota math.
+`llmquota` reads local credential stores and calls provider usage endpoints. Claude, Grok, and
+Nous collectors may refresh expired OAuth credentials and persist the rotated tokens back to the
+same credential store with mode `0600`; some providers require this to avoid invalidating a
+single-use refresh token. The tool also writes its cache, ring bus state, handoffs, presence files,
+and optional referral configuration under your home directory. It does not switch accounts or
+send credentials to llmquota-owned servers.
+
+`--anon` (or `a` in the arena) hides identity, paths, referrals, and monetary detail in the TUI.
+JSON output can still contain provider account details and should not be shared without review.
+See [SECURITY.md](SECURITY.md) for the trust model and exact write locations.
 
 ## Referrals / affiliate codes
 
@@ -209,10 +229,10 @@ llmquota refs              # list codes + links
 llmquota copy claude       # copy to clipboard (pbcopy on macOS)
 ```
 
-- **Claude** — auto-detected from `~/.claude.json` guest passes (`/passes`) when eligible
-- **Cursor / Codex / Grok** — set in `~/.config/llmquota/referrals.json` (see `examples/referrals.json`)
+- **Claude** - auto-detected from `~/.claude.json` guest passes (`/passes`) when eligible
+- **Cursor / Codex / Grok** - set in `~/.config/llmquota/referrals.json` (see `examples/referrals.json`)
 
-TUI: click / double-click / wheel / hover — or focus with `1`–`9`, then `c` / `↵` to copy.
+TUI: click, double-click, wheel, or hover. You can also focus with `1-9`, then use `c` / `↵` to copy.
 
 ## Optional Claude Code statusline
 
@@ -228,8 +248,8 @@ TUI: click / double-click / wheel / hover — or focus with `1`–`9`, then `c` 
 
 ## Related tools
 
-SessionWatcher (menubar), aistat, aiquota, tokmon — peers, not dependencies.
+SessionWatcher (menubar), aistat, aiquota, and tokmon are peers, not dependencies.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
