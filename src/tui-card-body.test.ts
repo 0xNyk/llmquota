@@ -64,11 +64,11 @@ assert(providerIdFromBusIdentity("repo") == null, "does not invent provider card
     account: "person@example.com",
     profileId: "secret-profile",
     profileLabel: "secret-profile",
-    configDir: "/Users/person/.codex",
+    configDir: "/tmp/llmquota-home/.codex",
   });
   privateSnap.referral = { code: "secret-code", link: "https://example.com/secret", label: "secret-code", source: "test", detail: null };
   privateSnap.windows = [{ name: "spend", label: "spend", usedPercent: 50, resetsAt: null, availableIn: null, windowSeconds: null, detail: "$50 used" }];
-  const report: RosterReport = { checkedAt: new Date(0).toISOString(), providers: [privateSnap], pick: { id: "codex", line: "fight person@example.com" }, pathNotes: ["/Users/person/private"] };
+  const report: RosterReport = { checkedAt: new Date(0).toISOString(), providers: [privateSnap], pick: { id: "codex", line: "fight user@example.com" }, pathNotes: ["/tmp/llmquota-home/private"] };
   const safe = anonymousReport(report);
   assert(safe.providers[0]?.account == null && safe.providers[0]?.referral == null,
     "anonymous report removes account and referral identity");
@@ -76,7 +76,7 @@ assert(providerIdFromBusIdentity("repo") == null, "does not invent provider card
     "anonymous report removes local directories");
   assert(safe.providers[0]?.windows.length === 0,
     "anonymous report removes billing-only usage details");
-  assert(!redactPrivateText("person@example.com /Users/person/private").includes("person@example.com"),
+  assert(!redactPrivateText("user@example.com /tmp/llmquota-home/private").includes("user@example.com"),
     "anonymous text redacts emails and home paths");
 }
 

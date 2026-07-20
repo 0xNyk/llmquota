@@ -6,21 +6,19 @@ Checklist for cutting a release. Owner-only steps are marked **(owner)**.
 
 ```bash
 pnpm install
-pnpm test          # tsc + full suite — must exit 0
+pnpm test          # tsc + full suite; must exit 0
 pnpm -s build      # clean tsc, no errors
 ```
 
 Leak / identifier gate (no secrets, no personal paths, no private names):
 
 ```bash
-bash /path/to/devgod/scripts/check-oss-leaks.sh --all
-git grep -nE '/Users/<you>|<personal-handles>|<private-project-names>'   # expect zero
+bash /path/to/agent-security/scripts/scan-repo.sh --all --gitleaks
+gitleaks git --redact --config .gitleaks.toml
 ```
 
-Residual leak-gate findings must be only: synthetic test fixtures
-(`/Users/test`, `/Users/person`, `person@example.com`), the tool's own XDG
-path (`~/.local/share/llmquota/bus/`), and documentation examples. Anything
-else blocks the release.
+Synthetic fixtures use temporary paths and reserved example identities. Any unexplained finding
+blocks the release.
 
 ## 2. Version + changelog
 
@@ -28,10 +26,11 @@ else blocks the release.
 - Add a dated section to `CHANGELOG.md` matching that version.
 - Keep `description`, `keywords`, `repository`, `homepage`, and `bugs` accurate.
 
-## 3. Make it public (owner)
+## 3. Confirm public release (owner)
 
-- **(owner)** Flip the GitHub repo to public **or** push to a public mirror.
-- Do not force this from automation — it is a deliberate, hard-to-reverse step.
+- **(owner)** Confirm the complete reachable history was scanned after any rewrite.
+- **(owner)** Flip the GitHub repo to public only after reviewing the final tree, commit metadata,
+  branch protection, secret scanning, and private vulnerability reporting.
 
 ## 4. Tag
 
@@ -46,7 +45,7 @@ The primary install path is git clone + `pnpm build` (see README). The package
 is *also* publish-safe if you want it on npm:
 
 - `bin` → `./llmquota` (bash launcher that runs `dist/index.js`).
-- `files` allowlist ships `dist/`, the launcher, `examples/`, and docs — and
+- `files` allowlist ships `dist/`, the launcher, `examples/`, and docs, and
   **excludes** `src/` and compiled `*.test.js` (verify with `npm pack --dry-run`).
 - `prepublishOnly` runs `pnpm test`, so a broken or untested build can't ship.
 

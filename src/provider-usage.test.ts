@@ -603,28 +603,28 @@ providers: {}
   const mac = cursorStateDbCandidates({
     platform: "darwin",
     env: {},
-    homeDir: "/Users/test",
+    homeDir: "/tmp/llmquota-macos-home",
   });
-  assert(mac[0] === "/Users/test/Library/Application Support/Cursor/User/globalStorage/state.vscdb",
+  assert(mac[0] === "/tmp/llmquota-macos-home/Library/Application Support/Cursor/User/globalStorage/state.vscdb",
     "Cursor macOS IDE state path detected");
   const linux = cursorStateDbCandidates({
     platform: "linux",
     env: { XDG_CONFIG_HOME: "/var/config" },
-    homeDir: "/home/test",
+    homeDir: "/tmp/llmquota-linux-home",
   });
   assert(linux[0] === "/var/config/Cursor/User/globalStorage/state.vscdb",
     "Cursor Linux XDG state path detected");
   const windows = cursorStateDbCandidates({
     platform: "win32",
-    env: { APPDATA: "C:\\Users\\test\\AppData\\Roaming" },
-    homeDir: "C:\\Users\\test",
+    env: { APPDATA: "C:\\TestHome\\AppData\\Roaming" },
+    homeDir: "C:\\TestHome",
   });
-  assert(windows[0] === "C:\\Users\\test\\AppData\\Roaming\\Cursor\\User\\globalStorage\\state.vscdb",
+  assert(windows[0] === "C:\\TestHome\\AppData\\Roaming\\Cursor\\User\\globalStorage\\state.vscdb",
     "Cursor Windows APPDATA state path detected");
   const override = cursorStateDbCandidates({
     platform: "linux",
     env: { LLMQUOTA_CURSOR_STATE_DB: "/custom/cursor.vscdb" },
-    homeDir: "/home/test",
+    homeDir: "/tmp/llmquota-linux-home",
   });
   assert(override[0] === "/custom/cursor.vscdb" && override.length === 1,
     "Cursor explicit state database override wins");

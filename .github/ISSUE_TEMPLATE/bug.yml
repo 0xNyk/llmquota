@@ -1,0 +1,39 @@
+name: Bug report
+description: Report reproducible incorrect behavior
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: Do not post vulnerability details here. Use the documented private security channel; if none exists, contact maintainers without sensitive details.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest safe repository, commands, or steps that reproduce it.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Affected version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include relevant operating system, runtime, package-manager, and browser versions.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or other evidence
+      description: Remove secrets, tokens, personal data, and private URLs before posting.
