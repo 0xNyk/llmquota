@@ -1,5 +1,6 @@
 node_modules/
 dist/
 .cache/
+.devgod/
 *.log
 .DS_Store
