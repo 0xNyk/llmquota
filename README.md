@@ -246,9 +246,26 @@ TUI: click, double-click, wheel, or hover. You can also focus with `1-9`, then u
 }
 ```
 
-## Related tools
+## How llmquota compares
 
-SessionWatcher (menubar), aistat, aiquota, and tokmon are peers, not dependencies.
+Every tool in this space answers a different question. llmquota answers *"which of my CLIs can I use right now"* - across five CLIs, from local state, with no accounts of its own.
+
+| Tool | Question it answers | Covers | Interface |
+|---|---|---|---|
+| **llmquota** | which CLI still has headroom, and when do the others reset | Claude Code, Codex, Cursor, Grok, Hermes | TUI arena, one-shot, `--json`, statusline |
+| [ai-usage-cli](https://pypi.org/project/ai-usage-cli/) | what are my quota percentages per provider | several providers | Python CLI, progress bars |
+| [abtop](https://github.com/graykode/abtop) | what are my *running sessions* doing | active Claude Code / Codex processes | htop-style live monitor |
+| [claude-monitor-cli](https://pypi.org/project/claude-monitor-cli/) | how fast am I burning my Claude windows | Claude only | TUI, burn-rate analytics |
+| Menu-bar apps (Code Meter, ClaudeBar) | glanceable gauge outside the terminal | mostly Claude | macOS menu bar |
+
+Differences that matter in practice:
+
+- **Cross-CLI pick.** `llmquota who` and `hop` name the next usable fighter instead of lining up per-provider dashboards for you to compare yourself.
+- **Zero-setup reads.** It reads the credential stores your CLIs already wrote - no API keys pasted into yet another tool.
+- **Agent-facing.** `--json`, the Claude Code statusline, and the ring bus make it usable *by* agents mid-session, not only by the human watching them.
+- **Session monitors are complements, not rivals.** An abtop-style process view tells you what a running session is doing; llmquota tells you whether it's worth starting one.
+
+Tool descriptions above are positioning-level as of July 2026 - check each repo for current features. SessionWatcher (menubar), aistat, aiquota, and tokmon are further peers, not dependencies.
 
 ## License
 
