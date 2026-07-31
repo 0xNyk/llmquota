@@ -29,6 +29,8 @@ export function baseSnapshot(input: BaseSnapshotInput): ProviderSnapshot {
     auth: input.auth ?? "missing",
     plan: null,
     subscription: null,
+    planChange: null,
+    planBilling: null,
     account: input.account ?? null,
     activeProvider: input.activeProvider ?? null,
     activeModel: input.activeModel ?? null,

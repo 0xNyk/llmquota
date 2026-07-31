@@ -33,6 +33,7 @@ import {
   hermesProviderAccessToken,
   hermesPaidAccessAllowed,
   hermesRequestAvailability,
+  hermesScheduledPlanChange,
   hermesSubscriptionLabels,
   hermesUsageScore,
   isNousAccountPayload,
@@ -60,6 +61,18 @@ import {
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
   console.log(`ok    ${msg}`);
+}
+
+{
+  const change = hermesScheduledPlanChange({
+    subscription: {
+      plan: "ultra",
+      pending_plan: "pro",
+      current_period_end: "2026-08-12T00:00:00.000Z",
+    },
+  });
+  assert(change?.kind === "downgrade", "Hermes named pending plan is classified as downgrade");
+  assert(change?.nextPlan === "Pro", "Hermes named pending plan is preserved");
 }
 
 {

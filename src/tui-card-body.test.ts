@@ -66,6 +66,23 @@ assert(providerIdFromBusIdentity("repo") == null, "does not invent provider card
     profileLabel: "secret-profile",
     configDir: "/tmp/llmquota-home/.codex",
   });
+  privateSnap.plan = "Pro";
+  privateSnap.subscription = "Pro · $200/mo";
+  privateSnap.planChange = {
+    nextPlan: "Pro 5x",
+    nextCost: "$100/mo",
+    effectiveAt: "2026-08-12T00:00:00.000Z",
+    kind: "downgrade",
+    source: "test",
+  };
+  privateSnap.planBilling = {
+    planName: "Pro 20x",
+    cost: "$200/mo",
+    listCost: "$300/mo",
+    renewsOn: "2026-08-12T00:00:00.000Z",
+    discount: "33% off until Aug 12",
+    source: "test",
+  };
   privateSnap.referral = { code: "secret-code", link: "https://example.com/secret", label: "secret-code", source: "test", detail: null };
   privateSnap.windows = [{ name: "spend", label: "spend", usedPercent: 50, resetsAt: null, availableIn: null, windowSeconds: null, detail: "$50 used" }];
   const report: RosterReport = { checkedAt: new Date(0).toISOString(), providers: [privateSnap], pick: { id: "codex", line: "fight user@example.com" }, pathNotes: ["/tmp/llmquota-home/private"] };
@@ -76,6 +93,12 @@ assert(providerIdFromBusIdentity("repo") == null, "does not invent provider card
     "anonymous report removes local directories");
   assert(safe.providers[0]?.windows.length === 0,
     "anonymous report removes billing-only usage details");
+  assert(safe.providers[0]?.plan == null && safe.providers[0]?.subscription == null,
+    "anonymous report removes plan fields that can derive public prices");
+  assert(safe.providers[0]?.planChange == null && safe.providers[0]?.planBilling == null,
+    "anonymous report removes plan changes and billing facts");
+  assert(!/[$€£]|renew|discount/i.test(JSON.stringify(safe)),
+    "anonymous report contains no private billing details");
   assert(!redactPrivateText("user@example.com /tmp/llmquota-home/private").includes("user@example.com"),
     "anonymous text redacts emails and home paths");
 }

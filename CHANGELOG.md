@@ -4,6 +4,30 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project aims at
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-31
+
+### Added
+- Plan and effective-cost display for Claude, Codex, Cursor, Grok, and Hermes.
+- `llmquota plan set`, `plan clear`, and `plan facts` commands for scheduled
+  changes, renewal dates, effective prices, and discounts.
+- Profile-scoped plan configuration with canonical `provider/profile` keys and
+  compatibility for existing bare non-default profile keys.
+- Provider-backed Hermes pending-plan classification and Cursor local
+  subscription facts.
+
+### Changed
+- Anonymous TUI mode now removes plan fields that could derive public prices,
+  scheduled plan changes, billing facts, and financial meter details.
+- Plain output preserves provider-route context when a declared billing plan
+  refines a coarse API plan name.
+
+### Fixed
+- Explicit cancellation now overrides a provider-detected destination plan
+  while retaining the detected effective date.
+- Named Hermes pending plans are classified as upgrades or downgrades instead
+  of generic changes.
+- Billing-plan overrides no longer remove route context from subscription text.
+
 ## [0.1.0] - 2026-07-19
 
 First public release.
@@ -43,4 +67,5 @@ First public release.
 ### Verbs
 - `who`, `hop`, `usage`, `open`, `refs`, `copy`, `statusline`, `doctor`.
 
-[0.1.0]: https://github.com/0xNyk/llmquota/releases/tag/v0.1.0
+[0.2.0]: https://github.com/0xNyk/llmquota/releases/tag/v0.2.0
+[0.1.0]: https://github.com/0xNyk/llmquota/commit/70f47c3e47d136411992f39796afc050c8a24674

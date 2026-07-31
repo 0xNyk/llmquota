@@ -21,6 +21,8 @@ interface CursorAuth {
   email: string | null;
   membership: string | null;
   subscriptionStatus: string | null;
+  /** ISO date when a scheduled cancel takes effect (local Cursor state). */
+  pendingCancellationDate: string | null;
 }
 
 export interface CursorAuthResult extends CursorAuth {
@@ -121,11 +123,18 @@ export function readCursorAuthFromCandidates(paths: string[]): CursorAuthResult 
           | undefined;
         return row?.value ?? null;
       };
+      const pendingRaw = get("cursor/pendingCancellationDate");
+      const pendingCancellationDate =
+        pendingRaw && pendingRaw !== "null" && pendingRaw.trim()
+          ? normalizeIsoTimestamp(pendingRaw.replace(/^"|"$/g, "").trim()) ||
+            pendingRaw.replace(/^"|"$/g, "").trim()
+          : null;
       return {
         accessToken: get("cursorAuth/accessToken"),
         email: get("cursorAuth/cachedEmail"),
         membership: get("cursorAuth/stripeMembershipType"),
         subscriptionStatus: get("cursorAuth/stripeSubscriptionStatus"),
+        pendingCancellationDate,
         dbPath,
         error: null,
       };
@@ -140,6 +149,7 @@ export function readCursorAuthFromCandidates(paths: string[]): CursorAuthResult 
     email: null,
     membership: null,
     subscriptionStatus: null,
+    pendingCancellationDate: null,
     dbPath: failedPath,
     error: lastError,
   };
@@ -200,6 +210,17 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
     base.subscription = `Cursor ${base.plan}${status}`;
   }
   base.account = auth.email;
+
+  if (auth.pendingCancellationDate) {
+    // Cursor keeps current membership until period end; destination tier is rarely local.
+    base.planChange = {
+      nextPlan: null,
+      nextCost: "$0",
+      effectiveAt: auth.pendingCancellationDate,
+      kind: "cancel",
+      source: "cursor_local",
+    };
+  }
 
   if (!auth.accessToken) {
     base.hint = "Sign in to the Cursor IDE (usage token lives in local state.vscdb).";

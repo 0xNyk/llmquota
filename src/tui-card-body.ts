@@ -12,6 +12,9 @@
 
 import type { Meter, ProviderSnapshot } from "./types.js";
 import { hottestPaceWarning } from "./arena-moves.js";
+import { planBillingLabel } from "./plan-billing.js";
+import { planChangeLabel } from "./plan-change.js";
+import { planCostInfo, planCostLabel } from "./plan-cost.js";
 import {
   BOLD,
   CYAN,
@@ -46,7 +49,18 @@ import { meterAffectsAvailability } from "./util.js";
 export type CardDensity = "tight" | "normal" | "roomy";
 
 export interface CardSlot {
-  kind: "status" | "who" | "selection" | "ref" | "meter" | "fact" | "when" | "hint" | "error";
+  kind:
+    | "status"
+    | "plan"
+    | "billing"
+    | "who"
+    | "selection"
+    | "ref"
+    | "meter"
+    | "fact"
+    | "when"
+    | "hint"
+    | "error";
   /** Lower = pack first. Sticky `when` is always last. */
   priority: number;
   line: string;
@@ -97,13 +111,9 @@ export function shortenHint(hint: string): string | null {
   return h;
 }
 
+/** Short plan + monthly cost when known (for plain packing / tests). */
 export function planLabel(p: ProviderSnapshot): string {
-  return (p.subscription || p.plan || "—")
-    .replace(/^Claude\s+/i, "")
-    .replace(/^Codex\s+/i, "")
-    .replace(/^Cursor\s+/i, "")
-    .replace(/^Grok\s+·\s+/i, "")
-    .replace(/^Nous\s+/i, "Nous ");
+  return planCostLabel(p);
 }
 
 /** Title owns the clock when waiting; ready titles stay calm. */
@@ -123,7 +133,7 @@ export function cardTitle(
 }
 
 /**
- * Status line — state + plan only.
+ * Status line — state + highlighted plan · cost.
  * No countdown here (title / when own the clock).
  */
 export function statusSlot(
@@ -150,11 +160,58 @@ export function statusSlot(
     badge = `${DIM}${st.short} ${st.label}${RESET}`;
   }
 
-  const plan = planLabel(p);
+  const { name, cost } = planCostInfo(p);
   const star = p.active ? ` ${CYAN}★${RESET}` : "";
-  const room = Math.max(6, contentW - vlen(badge) - (p.active ? 2 : 0) - 2);
-  const line = `${badge}  ${WHITE}${plan.slice(0, room)}${RESET}${star}`;
+  const starVis = p.active ? 2 : 0;
+  const room = Math.max(6, contentW - vlen(badge) - starVis - 2);
+
+  // Highlight plan name (bold white) and monthly cost (bold cyan).
+  let planPart: string;
+  if (cost) {
+    const sep = " · ";
+    const costRoom = Math.min(cost.length, Math.max(4, room - 4));
+    const nameRoom = Math.max(1, room - sep.length - costRoom);
+    const shownName = name.slice(0, nameRoom);
+    const shownCost = cost.slice(0, costRoom);
+    planPart = `${BOLD}${WHITE}${shownName}${RESET}${DIM}${sep}${RESET}${CYAN}${BOLD}${shownCost}${RESET}`;
+  } else {
+    planPart = `${BOLD}${WHITE}${name.slice(0, room)}${RESET}`;
+  }
+
+  const line = `${badge}  ${planPart}${star}`;
   return { kind: "status", priority: 10, line, sticky: true };
+}
+
+/** Highlighted next plan (downgrade/upgrade/cancel) effective later. */
+export function planChangeSlot(p: ProviderSnapshot, contentW: number): CardSlot | null {
+  const ch = p.planChange;
+  if (!ch) return null;
+  const label = planChangeLabel(ch);
+  if (!label) return null;
+  const color =
+    ch.kind === "downgrade" || ch.kind === "cancel"
+      ? YELLOW
+      : ch.kind === "upgrade"
+        ? GREEN
+        : CYAN;
+  return {
+    kind: "plan",
+    priority: 18,
+    line: `${color}${BOLD}${label.slice(0, contentW)}${RESET}`,
+    sticky: true,
+  };
+}
+
+/** Renewal / discount line (e.g. Grok 67% off until Oct 13). */
+export function planBillingSlot(p: ProviderSnapshot, contentW: number): CardSlot | null {
+  if (!p.planBilling) return null;
+  const label = planBillingLabel(p.planBilling);
+  if (!label) return null;
+  return {
+    kind: "billing",
+    priority: 22,
+    line: `${DIM}${label.slice(0, contentW)}${RESET}`,
+  };
 }
 
 export function whoSlot(p: ProviderSnapshot, contentW: number): CardSlot | null {
@@ -330,8 +387,20 @@ export function packCardSlots(
   const flexRoom = Math.max(0, bodyH - reserved);
   const chosenFlex = flex.slice(0, flexRoom);
 
-  // Preserve reading order: identity → active route → quota → supporting facts → reset.
-  const order = ["status", "error", "who", "selection", "ref", "meter", "fact", "hint", "when"] as const;
+  // Preserve reading order: identity → plan change → billing → route → quota → facts → reset.
+  const order = [
+    "status",
+    "plan",
+    "billing",
+    "error",
+    "who",
+    "selection",
+    "ref",
+    "meter",
+    "fact",
+    "hint",
+    "when",
+  ] as const;
   const rank = (k: string) => {
     const i = order.indexOf(k as (typeof order)[number]);
     return i < 0 ? 99 : i;
@@ -384,6 +453,12 @@ export function buildCardSlots(
   const slots: CardSlot[] = [];
 
   slots.push(statusSlot(p, avail, tick, contentW));
+
+  const nextPlan = planChangeSlot(p, contentW);
+  if (nextPlan) slots.push(nextPlan);
+
+  const billing = planBillingSlot(p, contentW);
+  if (billing) slots.push(billing);
 
   const selection = selectionSlot(p, contentW);
   if (selection) slots.push(selection);

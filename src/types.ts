@@ -35,6 +35,40 @@ export interface ReferralInfo {
   detail: string | null;
 }
 
+/** Scheduled plan change that has not taken effect yet (period end / next cycle). */
+export interface ScheduledPlanChange {
+  /** Destination plan after the change; null means cancel → free / ended. */
+  nextPlan: string | null;
+  /** List monthly cost of next plan when known (e.g. "$20/mo"). */
+  nextCost: string | null;
+  /** ISO timestamp when the change takes effect, if known. */
+  effectiveAt: string | null;
+  kind: "cancel" | "downgrade" | "upgrade" | "change";
+  /** e.g. cursor_local, config, config+detected */
+  source: string;
+}
+
+/**
+ * Declared billing facts when local APIs lack renewal / effective price / discount.
+ * Set via `llmquota plan facts` (e.g. Grok SuperGrok Heavy with 67% off).
+ */
+export interface PlanBillingFacts {
+  /**
+   * Display plan name when the vendor API is coarser than the billing page
+   * (e.g. API says "Pro", ChatGPT billing says "Pro 20x").
+   */
+  planName: string | null;
+  /** Effective monthly cost (e.g. "$99/mo" after discount). */
+  cost: string | null;
+  /** Public list price when different from effective (e.g. "$300/mo"). */
+  listCost: string | null;
+  /** Next renewal / charge date (ISO). */
+  renewsOn: string | null;
+  /** Short discount note (e.g. "67% off until Oct 13"). */
+  discount: string | null;
+  source: string;
+}
+
 export interface ProviderSnapshot {
   id: ProviderId;
   displayName: string;
@@ -46,6 +80,13 @@ export interface ProviderSnapshot {
   plan: string | null;
   /** Full subscription line for display */
   subscription: string | null;
+  /**
+   * Pending plan change (downgrade / upgrade / cancel) effective later.
+   * Detected from the vendor when possible; otherwise user-declared in config.
+   */
+  planChange: ScheduledPlanChange | null;
+  /** Effective cost / renewal / discount when declared or known. */
+  planBilling: PlanBillingFacts | null;
   account: string | null;
   /** Runtime/configured inference provider, independent from quota-account source. */
   activeProvider: string | null;

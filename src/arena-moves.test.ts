@@ -14,6 +14,8 @@ function snap(partial: Partial<ProviderSnapshot> & Pick<ProviderSnapshot, "id" |
     auth: "ok",
     plan: "Pro",
     subscription: "Pro",
+    planChange: null,
+    planBilling: null,
     account: null,
     windows: [],
     source: "test",

@@ -16,6 +16,45 @@ export interface LlmquotaConfig {
   detectExtraClis?: boolean;
   /** Only list catalog CLIs that are installed in `scan` (default scan behavior). */
   scanIncludeMissing?: boolean;
+  /**
+   * Declared upcoming plan changes (period-end downgrades, etc.).
+   * Keys: provider id (`claude`) or profile (`claude/personal`).
+   * Value: `{ "to": "Pro", "on": "2026-08-07" }` or `{ "to": "cancel", "on": "…" }`.
+   * Prefer `llmquota plan set` over editing by hand.
+   */
+  planChanges?: Record<
+    string,
+    {
+      to?: string | null;
+      next?: string | null;
+      nextPlan?: string | null;
+      on?: string | null;
+      at?: string | null;
+      effective?: string | null;
+      effectiveAt?: string | null;
+    }
+  >;
+  /**
+   * Declared billing facts (effective cost, renewal, discount).
+   * Prefer `llmquota plan facts`.
+   */
+  planBilling?: Record<
+    string,
+    {
+      plan?: string | null;
+      planName?: string | null;
+      name?: string | null;
+      cost?: string | null;
+      price?: string | null;
+      listCost?: string | null;
+      list?: string | null;
+      renews?: string | null;
+      renewsOn?: string | null;
+      renewal?: string | null;
+      discount?: string | null;
+      note?: string | null;
+    }
+  >;
 }
 
 export interface ClaudeProfileTarget {

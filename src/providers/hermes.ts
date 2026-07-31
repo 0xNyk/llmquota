@@ -19,6 +19,7 @@ import {
 } from "../util.js";
 import { detectHermes } from "./detect.js";
 import { readHermesActiveSelection } from "../active-selection.js";
+import { buildScheduledChange } from "../plan-change.js";
 import {
   codexUsageHint,
   codexUsageScore,
@@ -120,6 +121,10 @@ interface NousSubscription {
   current_period_end?: string;
   credits_remaining?: number;
   rollover_credits?: number;
+  /** Stripe-style: cancel at period end → Free (or pending_plan). */
+  cancel_at_period_end?: boolean;
+  status?: string;
+  pending_plan?: string | null;
 }
 
 interface NousPaidAccess {
@@ -795,15 +800,105 @@ export function hermesSubscriptionLabels(payload: NousAccountPayload): {
   const plan = sub?.plan || (tier != null ? `tier ${tier}` : null);
   if (plan) {
     const monthlyCharge = usd(sub?.monthly_charge ?? access?.subscription_monthly_charge);
+    const raw = String(plan).replace(/_/g, " ").trim();
+    // Keep "tier 2" as-is; pretty-print Ultra/Pro/etc.
+    const pretty = /^tier\s+\d+/i.test(raw) ? raw : titleCase(raw);
     return {
-      plan,
-      subscription: `Nous ${plan}${monthlyCharge ? ` · ${monthlyCharge}/mo` : ""}`,
+      plan: pretty,
+      subscription: `Nous ${pretty}${monthlyCharge ? ` · ${monthlyCharge}/mo` : ""}`,
     };
   }
   if (hermesPaidAccessAllowed(payload) === true || access?.active_subscription_is_paid) {
     return { plan: null, subscription: "Nous Portal (paid)" };
   }
   return { plan: null, subscription: "Nous Portal" };
+}
+
+/** Pending Nous plan change at period end (cancel → Free or named pending_plan). */
+export function hermesScheduledPlanChange(
+  payload: NousAccountPayload,
+): ProviderSnapshot["planChange"] {
+  const sub = payload.subscription;
+  if (!sub) return null;
+  const periodEnd = normalizeIsoTimestamp(sub.current_period_end) || sub.current_period_end || null;
+  const pendingRaw = sub.pending_plan != null ? String(sub.pending_plan).trim() : "";
+  const canceling =
+    sub.cancel_at_period_end === true ||
+    /cancel/i.test(sub.status || "") ||
+    /^free$/i.test(pendingRaw);
+
+  if (!canceling && !pendingRaw) return null;
+
+  const nextPlan =
+    canceling && (!pendingRaw || /^free$/i.test(pendingRaw))
+      ? null
+      : pendingRaw
+        ? titleCase(pendingRaw.replace(/_/g, " "))
+        : null;
+
+  return buildScheduledChange({
+    providerId: "hermes",
+    currentPlan: hermesSubscriptionLabels(payload).plan,
+    nextPlan,
+    effectiveAt: periodEnd,
+    source: "nous_portal",
+  });
+}
+
+/** Latest cached Nous account (for openai-codex route overlay). */
+export function readCachedNousAccount(
+  maxAgeMs = 7 * 24 * 3600_000,
+): { payload: NousAccountPayload; ageMs: number } | null {
+  let newest: { payload: NousAccountPayload; ageMs: number; cachedAt: number } | null = null;
+  for (const slot of discoverConfiguredNousSlots()) {
+    const hit = readCacheEntry<NousAccountPayload>(`hermes-nous-${slot.profileId}`, maxAgeMs);
+    if (!hit || !isNousAccountPayload(hit.data)) continue;
+    if (!newest || hit.cachedAt > newest.cachedAt) {
+      newest = { payload: hit.data, ageMs: hit.ageMs, cachedAt: hit.cachedAt };
+    }
+  }
+  const latest = readLatestCacheEntry<NousAccountPayload>("hermes-nous-", maxAgeMs);
+  if (latest && isNousAccountPayload(latest.data) && (!newest || latest.cachedAt > newest.cachedAt)) {
+    newest = { payload: latest.data, ageMs: latest.ageMs, cachedAt: latest.cachedAt };
+  }
+  return newest ? { payload: newest.payload, ageMs: newest.ageMs } : null;
+}
+
+/**
+ * When Hermes runs openai-codex for inference, still surface the Nous Agent
+ * subscription (plan, cancel, top-up credits) on the same card.
+ */
+export function applyNousOverlayToCodexRoute(base: ProviderSnapshot): ProviderSnapshot {
+  const cached = readCachedNousAccount();
+  if (!cached) return base;
+  const { payload, ageMs } = cached;
+  const labels = hermesSubscriptionLabels(payload);
+  if (labels.plan) {
+    base.plan = labels.plan;
+    // Keep route visible: Nous Ultra · via OpenAI Codex Pro
+    const route = base.subscription?.replace(/^OpenAI Codex\s*/i, "").trim() || "OpenAI Codex";
+    base.subscription = `${labels.subscription} · via ${route}`;
+  }
+  const change = hermesScheduledPlanChange(payload);
+  if (change) base.planChange = change;
+
+  const credit = nousPurchasedCreditMeter(payload, ageMs);
+  if (credit && !base.windows.some((w) => w.name === "nous_purchased")) {
+    base.windows = [...base.windows, credit];
+  }
+  // Subscription grant meter when present
+  const subMeters = buildHermesMeters(payload).filter(
+    (m) => m.name === "subscription" || m.name === "usable" || m.name === "member_spend",
+  );
+  for (const m of subMeters) {
+    if (!base.windows.some((w) => w.name === m.name)) base.windows.push(m);
+  }
+  const portalHint = hermesEntitlementHint(payload);
+  if (portalHint) {
+    base.hint = [base.hint, portalHint].filter(Boolean).join(" · ");
+  }
+  base.source = `${base.source}+nous_cache`;
+  return base;
 }
 
 function emptySnapshot(
@@ -956,6 +1051,7 @@ function finalizeAccount(
   const labels = hermesSubscriptionLabels(payload);
   base.plan = labels.plan;
   base.subscription = labels.subscription;
+  base.planChange = hermesScheduledPlanChange(payload);
 
   base.account =
     payload.organisation?.name ||
@@ -1080,7 +1176,8 @@ async function collectHermesOpenAiCodex(
   base.score = codexUsageScore(data, base.windows, base.activeModel);
   base.requestAvailability = codexRequestAvailability(data, base.activeModel, base.score);
   base.hint = codexUsageHint(data, base.windows);
-  return base;
+  // Overlay Nous Agent subscription (Ultra/Free, top-ups) when portal cache exists.
+  return applyNousOverlayToCodexRoute(base);
 }
 
 function collectHermesUnsupportedProvider(

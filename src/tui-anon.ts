@@ -5,6 +5,12 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const PRIVATE_BILLING_DETAIL = /[$€£]|\b(?:balance|billing|bonus|cap|cost|credit|discount|renew|spend)\b|\/mo\b|\boff until\b/i;
+
+function containsPrivateBillingDetail(value: string | null | undefined): boolean {
+  return Boolean(value && PRIVATE_BILLING_DETAIL.test(value));
+}
+
 export function redactPrivateText(value: string): string {
   let text = value;
   const home = homedir();
@@ -21,15 +27,19 @@ function anonymousProvider(p: ProviderSnapshot): ProviderSnapshot {
   return {
     ...p,
     displayName: p.displayName.split(" · ")[0] || p.displayName,
+    plan: null,
+    subscription: null,
+    planChange: null,
+    planBilling: null,
     account: null,
     profileId: p.profileId === "default" ? "default" : "profile",
     profileLabel: p.profileId === "default" ? "default" : "profile",
     configDir: null,
     referral: null,
-    hint: p.hint ? redactPrivateText(p.hint) : null,
+    hint: p.hint && !containsPrivateBillingDetail(p.hint) ? redactPrivateText(p.hint) : null,
     error: p.error ? redactPrivateText(p.error) : null,
     windows: p.windows
-      .filter((w) => !(w.detail && /[$€£]|balance|bonus|credit/i.test(w.detail)))
+      .filter((w) => !containsPrivateBillingDetail(w.detail))
       .map((w) => ({ ...w, detail: w.detail ? redactPrivateText(w.detail) : null })),
   };
 }

@@ -201,6 +201,31 @@ Optional `~/.config/llmquota/config.json`:
 - Set `includeNeedLogin: true` to list every silo shell waiting on `silo auth login`.
 - `claudeProfiles` allowlists silo names when set.
 
+### Plans, billing facts, and scheduled changes
+
+Provider APIs do not always expose the effective price, renewal date, discount,
+or a period-end plan change. Keep those facts local when the provider omits them:
+
+```bash
+llmquota plan
+llmquota plan set cursor Pro --on 2026-08-12
+llmquota plan set claude/personal Pro --on 2026-08-12
+llmquota plan facts grok --cost '$99/mo' --list '$300/mo' \
+  --renews 2026-08-12 --discount '67% off until Oct 13'
+llmquota plan clear cursor
+llmquota plan facts clear grok
+```
+
+Use a provider ID such as `cursor`, or a canonical `provider/profile` key such
+as `claude/personal`. Existing bare non-default profile keys remain supported,
+but bare `default` is intentionally not used because it is ambiguous across
+providers.
+
+These declarations are display facts. They do not prove request capacity and
+do not override measured quota availability. Values are stored in
+`~/.config/llmquota/config.json`. Anonymous TUI mode hides them, but JSON and
+one-shot output are not screenshot-safe.
+
 ## When not to use this
 
 - **You only run one CLI on one plan.** You already know your limit; this is for people juggling several.

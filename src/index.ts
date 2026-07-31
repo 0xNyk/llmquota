@@ -24,6 +24,17 @@ import {
 } from "./bus.js";
 import { collectAll } from "./collect.js";
 import { copyToClipboard } from "./clipboard.js";
+import {
+  loadPlanBillingConfig,
+  planBillingLabel,
+  setPlanBilling,
+} from "./plan-billing.js";
+import {
+  loadPlanChangesConfig,
+  planChangeLabel,
+  setPlanChange,
+} from "./plan-change.js";
+import { planCostInfo } from "./plan-cost.js";
 import { loadLlmquotaConfig } from "./profiles.js";
 import { scanInstalledClisAsync } from "./providers/detect.js";
 import { formatScanRows } from "./providers/discovered.js";
@@ -142,6 +153,11 @@ Usage:
   llmquota doctor       PATH + auth + terminal/mouse diagnostics
   llmquota refs         show referral / affiliate codes
   llmquota copy <name>  copy a referral link (claude|codex|cursor|grok|hermes)
+  llmquota plan         show current plans + scheduled changes + billing facts
+  llmquota plan set <id> <next> [--on YYYY-MM-DD]   declare period-end change
+  llmquota plan clear <id>   remove a declared change
+  llmquota plan facts <id> [--plan 'Pro 20x'] --cost '$99/mo' --renews YYYY-MM-DD [--discount '…'] [--list '$300/mo']
+  llmquota plan facts clear <id>
   llmquota --json       machine-readable snapshot
   llmquota --plain      no ANSI colors (text mode)
   llmquota --style emoji
@@ -190,6 +206,20 @@ Grok:
 Referrals:
   Claude auto-reads ~/.claude.json guest-pass link when available.
   Set others in ~/.config/llmquota/referrals.json
+
+Plan changes (period-end downgrades):
+  Cursor auto-reads pendingCancellationDate from IDE local state.
+  Other vendors rarely expose the next tier — declare them:
+    llmquota plan set claude Pro --on 2026-08-07
+    llmquota plan set cursor Pro          # pairs with Cursor cancel date when present
+    llmquota plan set codex Plus --on 2026-08-05
+    llmquota plan clear claude
+  Stored in ~/.config/llmquota/config.json → planChanges
+
+Billing facts (renewal / effective cost / discount — e.g. Grok offers):
+  llmquota plan facts grok --cost '$99/mo' --list '$300/mo' --renews 2026-08-12 --discount '67% off until Oct 13'
+  llmquota plan facts clear grok
+  Stored in ~/.config/llmquota/config.json → planBilling
 
 Read-only quotas. Never rotates / switches accounts (use silo for that).
 Never launches CLIs — open / hop / bus are hints + files only.
@@ -475,9 +505,211 @@ function findProvider(report: Awaited<ReturnType<typeof collectAll>>, q: string)
         x.id === needle ||
         x.displayName.toLowerCase() === needle ||
         x.profileId.toLowerCase() === needle ||
-        `${x.id}:${x.profileId}`.toLowerCase() === needle,
+        `${x.id}:${x.profileId}`.toLowerCase() === needle ||
+        `${x.id}/${x.profileId}`.toLowerCase() === needle,
     ) || report.providers.find((x) => x.id === (needle as ProviderId))
   );
+}
+
+async function runPlanCommand(argv: string[], json: boolean): Promise<void> {
+  // argv includes leading "plan"
+  const rest = argv[0] === "plan" || argv[0] === "--plan" ? argv.slice(1) : argv;
+  const sub = (rest[0] || "list").toLowerCase();
+
+  if (sub === "facts" || sub === "billing") {
+    const action = (rest[1] || "").toLowerCase();
+    if (action === "clear" || action === "rm" || action === "remove") {
+      const id = rest[2];
+      if (!id) {
+        process.stderr.write("usage: llmquota plan facts clear <provider|provider/profile>\n");
+        process.exitCode = 1;
+        return;
+      }
+      const { path } = setPlanBilling(id, null);
+      if (json) {
+        process.stdout.write(JSON.stringify({ ok: true, cleared: id, path }, null, 2) + "\n");
+        return;
+      }
+      process.stdout.write(`cleared billing facts for ${id}\n${path}\n`);
+      return;
+    }
+
+    const id = rest[1];
+    if (!id || id.startsWith("-")) {
+      process.stderr.write(
+        "usage: llmquota plan facts <id> --cost '$99/mo' [--list '$300/mo'] [--renews YYYY-MM-DD] [--discount '…']\n",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    let planName: string | null = null;
+    let cost: string | null = null;
+    let list: string | null = null;
+    let renews: string | null = null;
+    let discount: string | null = null;
+    for (let i = 2; i < rest.length; i++) {
+      const a = rest[i]!;
+      const take = (): string | null => {
+        if (a.includes("=")) return a.slice(a.indexOf("=") + 1) || null;
+        return rest[i + 1] ? rest[++i]! : null;
+      };
+      if (a === "--plan" || a === "--name" || a.startsWith("--plan=") || a.startsWith("--name=")) {
+        planName = take();
+      } else if (a === "--cost" || a === "--price" || a.startsWith("--cost=") || a.startsWith("--price=")) {
+        cost = take();
+      } else if (a === "--list" || a === "--list-cost" || a.startsWith("--list=") || a.startsWith("--list-cost=")) {
+        list = take();
+      } else if (a === "--renews" || a === "--renew" || a === "--renews-on" || a.startsWith("--renews=") || a.startsWith("--renew=")) {
+        renews = take();
+      } else if (a === "--discount" || a === "--note" || a.startsWith("--discount=") || a.startsWith("--note=")) {
+        discount = take();
+      }
+    }
+    if (!planName && !cost && !list && !renews && !discount) {
+      process.stderr.write("pass at least one of --plan --cost --list --renews --discount\n");
+      process.exitCode = 1;
+      return;
+    }
+    const existing = loadPlanBillingConfig()[id.toLowerCase()] || {};
+    const entry = {
+      ...existing,
+      ...(planName != null ? { plan: planName } : {}),
+      ...(cost != null ? { cost } : {}),
+      ...(list != null ? { listCost: list } : {}),
+      ...(renews != null ? { renewsOn: renews } : {}),
+      ...(discount != null ? { discount } : {}),
+    };
+    const { path } = setPlanBilling(id, entry);
+    if (json) {
+      process.stdout.write(JSON.stringify({ ok: true, id, entry, path }, null, 2) + "\n");
+      return;
+    }
+    process.stdout.write(`saved billing facts for ${id}\n${path}\n`);
+    return;
+  }
+
+  if (sub === "set") {
+    const id = rest[1];
+    const next = rest[2];
+    if (!id || !next) {
+      process.stderr.write(
+        "usage: llmquota plan set <provider|provider/profile> <nextPlan|cancel> [--on YYYY-MM-DD]\n",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    let on: string | null = null;
+    for (let i = 3; i < rest.length; i++) {
+      const a = rest[i]!;
+      if ((a === "--on" || a === "--at" || a === "-d") && rest[i + 1]) {
+        on = rest[++i]!;
+      } else if (a.startsWith("--on=")) {
+        on = a.slice(5);
+      }
+    }
+    const entry: { to: string; on?: string } = { to: next };
+    if (on) entry.on = on;
+    const { path } = setPlanChange(id, entry);
+    if (json) {
+      process.stdout.write(JSON.stringify({ ok: true, id, ...entry, path }, null, 2) + "\n");
+      return;
+    }
+    const when = on ? ` on ${on}` : "";
+    process.stdout.write(
+      `scheduled ${id} → ${next}${when}\n` +
+        `saved ${path}\n` +
+        (on
+          ? ""
+          : "tip: pass --on YYYY-MM-DD (period end) so cards show the date\n"),
+    );
+    return;
+  }
+
+  if (sub === "clear" || sub === "rm" || sub === "remove") {
+    const id = rest[1];
+    if (!id) {
+      process.stderr.write("usage: llmquota plan clear <provider|provider/profile>\n");
+      process.exitCode = 1;
+      return;
+    }
+    const { path } = setPlanChange(id, null);
+    if (json) {
+      process.stdout.write(JSON.stringify({ ok: true, cleared: id, path }, null, 2) + "\n");
+      return;
+    }
+    process.stdout.write(`cleared scheduled change for ${id}\n${path}\n`);
+    return;
+  }
+
+  // list (default)
+  const report = await collectAll({ refresh: false });
+  const declared = loadPlanChangesConfig();
+  const billing = loadPlanBillingConfig();
+  const rows = report.providers
+    .filter(
+      (p) =>
+        p.auth === "ok" ||
+        p.plan ||
+        p.planChange ||
+        p.planBilling ||
+        declared[p.id] ||
+        billing[p.id],
+    )
+    .map((p) => {
+      const cost = planCostInfo(p);
+      return {
+        id: p.id,
+        profileId: p.profileId,
+        displayName: p.displayName,
+        plan: cost.name !== "—" ? cost.name : p.plan,
+        cost: cost.cost,
+        subscription: p.subscription,
+        planChange: p.planChange,
+        planBilling: p.planBilling,
+        changeLabel: p.planChange ? planChangeLabel(p.planChange) : null,
+        billingLabel: p.planBilling ? planBillingLabel(p.planBilling) : null,
+      };
+    });
+
+  if (json) {
+    process.stdout.write(
+      JSON.stringify(
+        { checkedAt: report.checkedAt, planChanges: declared, planBilling: billing, providers: rows },
+        null,
+        2,
+      ) + "\n",
+    );
+    return;
+  }
+
+  process.stdout.write("llmquota plans\n");
+  for (const r of rows) {
+    const now = r.plan || r.subscription || "—";
+    const cost = r.cost ? ` · ${r.cost}` : "";
+    const next = r.changeLabel ? `  ${r.changeLabel}` : "";
+    const bill = r.billingLabel ? `  ${r.billingLabel}` : "";
+    process.stdout.write(`  ${r.displayName.padEnd(18)} now ${now}${cost}${next}${bill}\n`);
+  }
+  if (!Object.keys(declared).length && !Object.keys(billing).length) {
+    process.stdout.write(
+      "\nDeclare a period-end change or billing facts:\n" +
+        "  llmquota plan set cursor Pro\n" +
+        "  llmquota plan facts grok --cost '$99/mo' --renews 2026-08-12 --discount '67% off until Oct 13'\n",
+    );
+  } else {
+    if (Object.keys(declared).length) {
+      process.stdout.write("\nplanChanges:\n");
+      for (const [k, v] of Object.entries(declared)) {
+        process.stdout.write(`  ${k}: ${JSON.stringify(v)}\n`);
+      }
+    }
+    if (Object.keys(billing).length) {
+      process.stdout.write("\nplanBilling:\n");
+      for (const [k, v] of Object.entries(billing)) {
+        process.stdout.write(`  ${k}: ${JSON.stringify(v)}\n`);
+      }
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -494,6 +726,11 @@ async function main(): Promise<void> {
 
   if (opts.bus) {
     await runBusCommand(argv, opts.json);
+    return;
+  }
+
+  if (argv[0] === "plan" || argv[0] === "--plan") {
+    await runPlanCommand(argv, opts.json);
     return;
   }
 

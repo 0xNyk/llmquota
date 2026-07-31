@@ -7,6 +7,8 @@ import { pathCollisionNotes } from "./providers/detect.js";
 import { collectDiscoveredExtras } from "./providers/discovered.js";
 import { collectGrokAll } from "./providers/grok.js";
 import { collectHermesAll } from "./providers/hermes.js";
+import { attachPlanBilling } from "./plan-billing.js";
+import { attachPlanChanges } from "./plan-change.js";
 import { attachReferrals } from "./referrals.js";
 import { meterAffectsAvailability } from "./util.js";
 
@@ -50,14 +52,19 @@ export async function collectAll(
   ]);
 
   const extras = collectDiscoveredExtras(opts.scanned);
-  const providers = attachReferrals([
-    ...claude,
-    codex,
-    cursor,
-    ...grok,
-    ...hermes,
-    ...extras,
-  ]);
+  // Billing facts (plan name / cost) first so plan-change classification sees "Pro 20x".
+  const providers = attachPlanChanges(
+    attachPlanBilling(
+      attachReferrals([
+        ...claude,
+        codex,
+        cursor,
+        ...grok,
+        ...hermes,
+        ...extras,
+      ]),
+    ),
+  );
   providers.sort(compareSnapshots);
 
   return {

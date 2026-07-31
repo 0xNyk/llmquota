@@ -1,5 +1,8 @@
 import type { CliOptions, Meter, ProviderSnapshot, RosterReport } from "./types.js";
 import { primaryMeter } from "./collect.js";
+import { planBillingLabel } from "./plan-billing.js";
+import { planChangeLabel } from "./plan-change.js";
+import { planCostInfo } from "./plan-cost.js";
 import { formatTerminalProbe, probeTerminal } from "./terminal.js";
 import { usageLevel } from "./usage-level.js";
 import { meterAffectsAvailability } from "./util.js";
@@ -20,6 +23,21 @@ function colorEnabled(opts: CliOptions): boolean {
 
 function c(opts: CliOptions, code: string, text: string): string {
   return colorEnabled(opts) ? `${code}${text}${RESET}` : text;
+}
+
+function replacePlanInSubscription(
+  subscription: string,
+  currentPlan: string,
+  nextPlan: string,
+  displayName: string,
+): string {
+  const index = subscription.toLowerCase().indexOf(currentPlan.toLowerCase());
+  if (index >= 0) {
+    return `${subscription.slice(0, index)}${nextPlan}${subscription.slice(index + currentPlan.length)}`;
+  }
+  const suffixAt = subscription.indexOf(" · ");
+  const suffix = suffixAt >= 0 ? subscription.slice(suffixAt) : "";
+  return `${displayName} ${nextPlan}${suffix}`;
 }
 
 function levelGlyph(opts: CliOptions, used: number | null): string {
@@ -126,11 +144,25 @@ export function renderRoster(report: RosterReport, opts: CliOptions): string {
 
 function renderProvider(p: ProviderSnapshot, opts: CliOptions): string {
   const tag = statusTag(p);
-  const sub = p.subscription || (p.plan ? `${p.displayName} ${p.plan}` : null);
-  const plan = p.plan ? c(opts, DIM, ` · ${p.plan}`) : "";
+  const costInfo = planCostInfo(p);
+  const planShown = costInfo.name !== "—" ? costInfo.name : p.plan;
+  const planHead = planShown
+    ? c(opts, DIM, ` · ${planShown}${costInfo.cost ? ` · ${costInfo.cost}` : ""}`)
+    : costInfo.cost
+      ? c(opts, DIM, ` · ${costInfo.cost}`)
+      : "";
+  const subBase = p.subscription || (p.plan ? `${p.displayName} ${p.plan}` : null);
+  // Prefer declared name (Pro 20x) over coarse API subscription (Codex Pro).
+  let sub =
+    planShown && p.plan && planShown !== p.plan
+      ? replacePlanInSubscription(subBase || "", p.plan, planShown, p.displayName)
+      : subBase;
+  if (sub && costInfo.cost && !/\$\s?\d/.test(sub)) {
+    sub = `${sub} · ${costInfo.cost}`;
+  }
   const ver = p.version ? c(opts, DIM, `  ${p.version}`) : "";
   const active = p.active ? c(opts, CYAN, " ★") : "";
-  const head = `${levelGlyph(opts, primaryMeter(p)?.usedPercent ?? null)} ${c(opts, BOLD, p.displayName)}${active}${plan}  ${tag}${ver}`;
+  const head = `${levelGlyph(opts, primaryMeter(p)?.usedPercent ?? null)} ${c(opts, BOLD, p.displayName)}${active}${planHead}  ${tag}${ver}`;
 
   const lines = [head];
 
@@ -144,6 +176,25 @@ function renderProvider(p: ProviderSnapshot, opts: CliOptions): string {
   }
   if (sub) {
     lines.push(`  ${c(opts, CYAN, "subscription")}  ${sub}`);
+  }
+  if (p.planChange) {
+    const change = planChangeLabel(p.planChange);
+    const tone =
+      p.planChange.kind === "downgrade" || p.planChange.kind === "cancel"
+        ? YELLOW
+        : p.planChange.kind === "upgrade"
+          ? GREEN
+          : CYAN;
+    lines.push(`  ${c(opts, tone, "next plan")}     ${change}`);
+  }
+  if (p.planBilling) {
+    const bill = planBillingLabel(p.planBilling);
+    if (bill) lines.push(`  ${c(opts, DIM, "billing")}       ${bill}`);
+    if (p.planBilling.listCost && p.planBilling.cost && p.planBilling.listCost !== p.planBilling.cost) {
+      lines.push(
+        `  ${c(opts, DIM, "list price")}    ${p.planBilling.listCost} → effective ${p.planBilling.cost}`,
+      );
+    }
   }
   if (p.account) {
     lines.push(`  ${c(opts, DIM, "account")}       ${p.account}`);
