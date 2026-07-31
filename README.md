@@ -243,7 +243,7 @@ single-use refresh token. The tool also writes its cache, ring bus state, handof
 and optional referral configuration under your home directory. It does not switch accounts or
 send credentials to llmquota-owned servers.
 
-`--anon` (or `a` in the arena) hides identity, paths, referrals, and monetary detail in the TUI.
+`--anon` (or `a` in the arena) hides identity, paths, profiles, plans, referrals, and monetary detail in the TUI.
 JSON output can still contain provider account details and should not be shared without review.
 See [SECURITY.md](SECURITY.md) for the trust model and exact write locations.
 

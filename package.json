@@ -1,6 +1,6 @@
 {
   "name": "llmquota",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Fun terminal roster for Claude / Codex / Cursor / Grok / Hermes (Nous) rate limits",
   "type": "module",
   "bin": {

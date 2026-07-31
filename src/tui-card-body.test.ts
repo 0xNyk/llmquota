@@ -61,6 +61,7 @@ assert(providerIdFromBusIdentity("repo") == null, "does not invent provider card
     id: "codex",
     displayName: "Codex · personal",
     installed: true,
+    auth: "ok",
     account: "person@example.com",
     profileId: "secret-profile",
     profileLabel: "secret-profile",
@@ -85,7 +86,9 @@ assert(providerIdFromBusIdentity("repo") == null, "does not invent provider card
   };
   privateSnap.referral = { code: "secret-code", link: "https://example.com/secret", label: "secret-code", source: "test", detail: null };
   privateSnap.windows = [{ name: "spend", label: "spend", usedPercent: 50, resetsAt: null, availableIn: null, windowSeconds: null, detail: "$50 used" }];
-  const report: RosterReport = { checkedAt: new Date(0).toISOString(), providers: [privateSnap], pick: { id: "codex", line: "fight user@example.com" }, pathNotes: ["/tmp/llmquota-home/private"] };
+  privateSnap.requestAvailability = "available";
+  privateSnap.score = 5;
+  const report: RosterReport = { checkedAt: new Date(0).toISOString(), providers: [privateSnap], pick: { id: "codex", line: "fight user@example.com with Pro 20x" }, pathNotes: ["/tmp/llmquota-home/private"] };
   const safe = anonymousReport(report);
   assert(safe.providers[0]?.account == null && safe.providers[0]?.referral == null,
     "anonymous report removes account and referral identity");
@@ -99,6 +102,8 @@ assert(providerIdFromBusIdentity("repo") == null, "does not invent provider card
     "anonymous report removes plan changes and billing facts");
   assert(!/[$€£]|renew|discount/i.test(JSON.stringify(safe)),
     "anonymous report contains no private billing details");
+  assert(!/person@example\.com|Pro 20x|secret-profile/i.test(safe.pick.line) && safe.pick.line.includes("5% used"),
+    "anonymous report rebuilds the recommendation without private plan or profile context");
   assert(!redactPrivateText("user@example.com /tmp/llmquota-home/private").includes("user@example.com"),
     "anonymous text redacts emails and home paths");
 }

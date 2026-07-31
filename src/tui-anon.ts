@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { pickFighter } from "./collect.js";
 import type { ProviderSnapshot, RosterReport } from "./types.js";
 
 function escapeRegex(value: string): string {
@@ -45,10 +46,11 @@ function anonymousProvider(p: ProviderSnapshot): ProviderSnapshot {
 }
 
 export function anonymousReport(report: RosterReport): RosterReport {
+  const providers = report.providers.map(anonymousProvider);
   return {
     ...report,
-    providers: report.providers.map(anonymousProvider),
-    pick: { ...report.pick, line: redactPrivateText(report.pick.line) },
+    providers,
+    pick: pickFighter(providers),
     pathNotes: [],
   };
 }

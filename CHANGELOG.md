@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project aims at
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-07-31
+
+### Fixed
+- Anonymous TUI recommendations are rebuilt from anonymized provider records,
+  preventing plan or profile details from surviving in the header.
+
 ## [0.2.0] - 2026-07-31
 
 ### Added
@@ -67,5 +73,6 @@ First public release.
 ### Verbs
 - `who`, `hop`, `usage`, `open`, `refs`, `copy`, `statusline`, `doctor`.
 
+[0.2.1]: https://github.com/0xNyk/llmquota/releases/tag/v0.2.1
 [0.2.0]: https://github.com/0xNyk/llmquota/releases/tag/v0.2.0
 [0.1.0]: https://github.com/0xNyk/llmquota/commit/70f47c3e47d136411992f39796afc050c8a24674
