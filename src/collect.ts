@@ -159,7 +159,7 @@ export function pickFighter(providers: ProviderSnapshot[]): RosterReport["pick"]
   const best = ready[0]!;
   const used =
     best.score != null ? `${Math.round(best.score)}% used` : null;
-  const sub = best.subscription || best.plan;
+  const sub = best.planBilling?.planName || best.subscription || best.plan;
   const bits = [sub, used].filter(Boolean);
   const detail = bits.length ? bits.join(" · ") : "auth ok";
   return {

@@ -833,6 +833,29 @@ providers: {}
 }
 
 {
+  const grok = baseSnapshot({
+    id: "grok",
+    displayName: "Grok",
+    installed: true,
+    auth: "ok",
+  });
+  grok.subscription = "Grok · grok.com OAuth";
+  grok.planBilling = {
+    planName: "Build",
+    cost: null,
+    listCost: null,
+    renewsOn: null,
+    discount: null,
+    source: "config",
+  };
+  grok.score = 6;
+  grok.requestAvailability = "available";
+  const pick = pickFighter([grok]);
+  assert(pick.line.includes("Build") && !pick.line.includes("grok.com OAuth"),
+    "recommendation prefers declared product plan over auth transport");
+}
+
+{
   const claude = collectClaudeUsageWindows({
     five_hour: { utilization: Number.NaN },
     seven_day: { utilization: 25, resets_at: "definitely-not-a-date" },

@@ -1,7 +1,13 @@
 import {
   applyGrokBillingRecord,
   finalizeGrokProbeForTest,
+  grokAuthIdentityForTest,
+  grokAuthEntryIsOidcForTest,
+  grokAuthPathForTest,
+  grokHomePathForTest,
+  grokMissingRefreshTokenErrorForTest,
   parseGrokBillingLogLine,
+  parseGrokCreditsPayload,
 } from "./providers/grok.js";
 import { baseSnapshot } from "./snapshot.js";
 import { availability } from "./tui-model.js";
@@ -43,6 +49,165 @@ const billingLine = JSON.stringify({
 });
 
 {
+  assert(grokAuthPathForTest({ GROK_AUTH_JSON: "/tmp/custom-grok-auth.json" }) ===
+    "/tmp/custom-grok-auth.json", "Grok auth path honors GROK_AUTH_JSON");
+  assert(grokAuthPathForTest({ GROK_HOME: "/tmp/custom-grok-home" }) ===
+    "/tmp/custom-grok-home/auth.json", "Grok auth path honors GROK_HOME");
+  assert(grokHomePathForTest({ GROK_AUTH_JSON: "/tmp/custom-grok-auth.json" }) ===
+    "/tmp", "Grok auth file directory controls fallback state without GROK_HOME");
+  assert(grokHomePathForTest({
+    GROK_AUTH_JSON: "/tmp/custom-grok-auth.json",
+    GROK_HOME: "/tmp/custom-grok-home",
+  }) === "/tmp/custom-grok-home", "GROK_HOME controls fallback state with an auth override");
+  assert(grokAuthEntryIsOidcForTest("https://auth.x.ai::client", {
+    auth_mode: "oidc",
+    oidc_issuer: "https://auth.x.ai",
+    key: "token",
+  }), "Grok auth selector accepts the official OIDC scope");
+  assert(grokAuthEntryIsOidcForTest("https://accounts.x.ai/sign-in", {
+    auth_mode: "oidc",
+    key: "token",
+  }), "Grok auth selector accepts the legacy OIDC scope");
+  assert(!grokAuthEntryIsOidcForTest("https://accounts.x.ai/sign-in", {
+    auth_mode: "oidc",
+    oidc_issuer: "https://evil.example",
+    key: "token",
+  }), "Grok legacy scope rejects a conflicting arbitrary issuer");
+  assert(!grokAuthEntryIsOidcForTest("api.x.ai", {
+    auth_mode: "api-key",
+    key: "api-key",
+  }), "Grok auth selector rejects API-key credentials");
+  assert(!grokAuthEntryIsOidcForTest("https://evil.example::client", {
+    auth_mode: "oidc",
+    oidc_issuer: "https://evil.example",
+    key: "token",
+  }), "Grok auth selector rejects arbitrary OIDC issuers");
+}
+
+{
+  const record = parseGrokCreditsPayload({
+    config: {
+      creditUsagePercent: 6,
+      currentPeriod: {
+        type: "USAGE_PERIOD_TYPE_WEEKLY",
+        start: "2026-08-07T09:03:08.730577+00:00",
+        end: "2026-08-14T09:03:08.730577+00:00",
+      },
+      productUsage: [
+        { product: "GrokBuild", usagePercent: 5 },
+        { product: "GrokChat", usagePercent: 1 },
+      ],
+      isUnifiedBillingUser: true,
+      onDemandCap: { val: 0 },
+      onDemandUsed: { val: 0 },
+      prepaidBalance: { val: 0 },
+    },
+  }, Date.parse("2026-08-08T16:30:00Z"));
+  assert(record?.usedPercent === 6 && record.productUsage?.length === 2,
+    "Grok live credits payload yields shared weekly and product usage");
+  const live = applyGrokBillingRecord(base(), record!, Date.parse("2026-08-08T16:30:00Z"), "api");
+  assert(live.score === 6 && live.requestAvailability === "available",
+    "Grok live credits payload proves current shared headroom");
+  assert(live.source.includes("grok_billing_api"),
+    "Grok live credits payload records its authoritative API source");
+  assert(live.windows.some((window) => window.name === "product_grokbuild" && window.usedPercent === 5),
+    "Grok Build product usage remains visible below the shared weekly pool");
+  assert(live.windows.some((window) => window.name === "product_grokchat" && window.usedPercent === 1),
+    "Grok Chat product usage remains visible below the shared weekly pool");
+  const enumLive = applyGrokBillingRecord(base(), {
+    ...record!,
+    productUsage: [{ product: "PRODUCT_GROK_BUILD", usedPercent: 5 }],
+  }, Date.parse("2026-08-08T16:30:00Z"));
+  assert(enumLive.windows.some((window) =>
+    window.name === "product_grokbuild" && window.label === "Grok Build"),
+  "Grok protobuf enum product names normalize to the same product meter");
+
+  const freshZero = parseGrokCreditsPayload({
+    config: {
+      currentPeriod: {
+        type: "USAGE_PERIOD_TYPE_WEEKLY",
+        start: "2026-08-07T09:03:08.730577+00:00",
+        end: "2026-08-14T09:03:08.730577+00:00",
+      },
+    },
+  }, Date.parse("2026-08-08T16:30:00Z"));
+  assert(freshZero?.usedPercent === 0,
+    "Grok current weekly proto3 payload can prove omitted usage is zero");
+
+  for (const invalidPercent of ["0", null]) {
+    const invalid = parseGrokCreditsPayload({
+      config: {
+        creditUsagePercent: invalidPercent,
+        currentPeriod: {
+          type: "USAGE_PERIOD_TYPE_WEEKLY",
+          start: "2026-08-07T09:03:08.730577+00:00",
+          end: "2026-08-14T09:03:08.730577+00:00",
+        },
+      },
+    }, Date.parse("2026-08-08T16:30:00Z"));
+    assert(invalid == null, "Grok present malformed shared usage stays unknown");
+  }
+
+  const future = parseGrokCreditsPayload({
+    config: {
+      creditUsagePercent: 6,
+      currentPeriod: {
+        type: "USAGE_PERIOD_TYPE_WEEKLY",
+        start: "2026-08-09T09:03:08.730577+00:00",
+        end: "2026-08-16T09:03:08.730577+00:00",
+      },
+    },
+  }, Date.parse("2026-08-08T16:30:00Z"));
+  assert(future == null, "Grok future weekly period is not current usage evidence");
+
+  const contradictory = parseGrokCreditsPayload({
+    config: {
+      currentPeriod: {
+        type: "USAGE_PERIOD_TYPE_WEEKLY",
+        start: "2026-08-07T09:03:08.730577+00:00",
+        end: "2026-08-14T09:03:08.730577+00:00",
+      },
+      productUsage: [{ product: "GrokBuild", usagePercent: 5 }],
+    },
+  }, Date.parse("2026-08-08T16:30:00Z"));
+  assert(contradictory == null,
+    "Grok omitted shared percent with positive product usage stays unknown");
+
+  const malformedProduct = parseGrokCreditsPayload({
+    config: {
+      currentPeriod: {
+        type: "USAGE_PERIOD_TYPE_WEEKLY",
+        start: "2026-08-07T09:03:08.730577+00:00",
+        end: "2026-08-14T09:03:08.730577+00:00",
+      },
+      productUsage: [{ product: "GrokBuild", usagePercent: "5" }],
+    },
+  }, Date.parse("2026-08-08T16:30:00Z"));
+  assert(malformedProduct == null,
+    "Grok malformed product usage cannot turn omitted shared usage into zero");
+
+  const stale = parseGrokCreditsPayload({
+    config: {
+      creditUsagePercent: 6,
+      currentPeriod: {
+        type: "USAGE_PERIOD_TYPE_WEEKLY",
+        start: "2026-07-31T09:03:08.730577+00:00",
+        end: "2026-08-07T09:03:08.730577+00:00",
+      },
+    },
+  }, Date.parse("2026-08-08T16:30:00Z"));
+  assert(stale == null, "Grok expired credits payload is not current usage evidence");
+}
+
+{
+  const identity = grokAuthIdentityForTest("oidc", false);
+  assert(identity.plan == null,
+    "Grok authentication does not invent a product plan");
+  assert(identity.subscription === "Grok · grok.com OAuth",
+    "Grok OIDC is labelled as grok.com authentication");
+}
+
+{
   const record = parseGrokBillingLogLine(billingLine);
   assert(record?.usedPercent === 100 && record.subscriptionTier === "SuperGrok Heavy",
     "Grok authoritative weekly billing log parses without invented values");
@@ -81,7 +246,13 @@ const billingLine = JSON.stringify({
   assert(snap.windows.length === 0, "ok probe → no invented meter rows");
   assert(availability(snap) === "unknown", "ok probe → weekly availability remains unknown");
   assert(Boolean(snap.hint), "ok probe → hint points to real usage UI");
+  assert(!/no public API/i.test(snap.hint || "") && /billing/i.test(snap.hint || ""),
+    "ok probe → billing fallback copy reflects the live endpoint");
 }
+
+assert(grokMissingRefreshTokenErrorForTest("/tmp/custom-grok/auth.json") ===
+  "no refresh_token in /tmp/custom-grok/auth.json",
+"Grok refresh error reports the selected credential path");
 
 {
   const snap = finalizeGrokProbeForTest(base(), {
