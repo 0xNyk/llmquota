@@ -179,7 +179,7 @@ ln -sfn "$(pwd)/llmquota" ~/.local/bin/llmquota
 |---|---|
 | Claude | `~/.claude` + each [silo](https://github.com/0xNyk/silo) profile under `~/.silo/profiles/*` → refresh via `platform.claude.com` → OAuth usage (cached ~90s). Keychain only for the default slot. |
 | Codex | `~/.codex/auth.json` → ChatGPT WHAM usage |
-| Cursor | Cursor `state.vscdb` token → dashboard period usage; `~/.cursor/cli-config.json` selects the active model, which binds Auto vs named/API quota pools. |
+| Cursor | Cursor IDE `state.vscdb` token → dashboard period usage (prefers IDE, falls back to CLI `~/.cursor/auth.json` or macOS keychain when IDE state is absent); `~/.cursor/cli-config.json` selects the active model, which binds Auto vs named/API quota pools. |
 | Grok | `~/.grok/auth.json` OIDC → `api.x.ai/v1/models` probe. The latest validated `billing: fetched credits config` record in Grok's structured log supplies provider-fetched SuperGrok weekly %, tier, and reset. Its fetch age is shown; stale partial usage does not claim current availability. |
 | Hermes | `~/.hermes/config.yaml` selects the runtime provider/model. Nous uses Portal account subscription/credits; `openai-codex` uses Hermes's own OAuth token with ChatGPT WHAM. Other active providers remain quota-unknown unless an authoritative source exists. |
 

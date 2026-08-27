@@ -21,6 +21,7 @@ import {
   cursorUsageHint,
   cursorInstalled,
   cursorStateDbCandidates,
+  cursorCliAuthPath,
   isCursorUsagePayload,
   readCursorAuthFromCandidates,
 } from "./providers/cursor.js";
@@ -668,6 +669,78 @@ providers: {}
       "Cursor discovery skips an unreadable candidate when a valid state database follows");
     assert(fallback.accessToken === "fixture-token" && fallback.membership === "pro",
       "Cursor auth and subscription facts are read from IDE state");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  const dir = mkdtempSync(join(tmpdir(), "llmquota-cursor-cli-"));
+  try {
+    const homeDir = dir;
+    const cursorDir = join(homeDir, ".cursor");
+    mkdirSync(cursorDir, { recursive: true });
+
+    const cliPath = cursorCliAuthPath({ homeDir });
+    assert(cliPath === join(homeDir, ".cursor", "auth.json"),
+      "Cursor CLI auth path is resolved correctly");
+
+    writeFileSync(cliPath, JSON.stringify({
+      accessToken: "cli-token-123",
+      email: "cli@example.test",
+    }));
+
+    const cliAuth = readCursorAuthFromCandidates([], { homeDir });
+    assert(cliAuth.accessToken === "cli-token-123" && cliAuth.email === "cli@example.test",
+      "Cursor CLI auth.json is read when IDE state.vscdb is absent");
+    assert(cliAuth.source === "cli_file",
+      "Cursor CLI auth source is correctly identified");
+    assert(cliAuth.cliAuthPath === cliPath,
+      "Cursor CLI auth path is captured in result");
+
+    const validDb = join(homeDir, "state.vscdb");
+    const db = new DatabaseSync(validDb);
+    try {
+      db.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)");
+      const insert = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+      insert.run("cursorAuth/accessToken", "ide-token-456");
+      insert.run("cursorAuth/cachedEmail", "ide@example.test");
+      insert.run("cursorAuth/stripeMembershipType", "ultra");
+    } finally {
+      db.close();
+    }
+
+    const bothPresent = readCursorAuthFromCandidates([validDb], { homeDir });
+    assert(bothPresent.accessToken === "ide-token-456" && bothPresent.email === "ide@example.test",
+      "Cursor IDE state.vscdb is preferred when both IDE and CLI auth exist");
+    assert(bothPresent.source === "ide_vscdb",
+      "Cursor IDE source is correctly identified when both exist");
+
+    const malformedDb = join(homeDir, "malformed.vscdb");
+    writeFileSync(malformedDb, "not sqlite");
+    const cliFallback = readCursorAuthFromCandidates([malformedDb], { homeDir });
+    assert(cliFallback.accessToken === "cli-token-123",
+      "Cursor falls back to CLI auth when IDE state.vscdb is malformed");
+    assert(cliFallback.source === "cli_file",
+      "Cursor source is CLI when falling back from malformed IDE state");
+
+    writeFileSync(cliPath, JSON.stringify({
+      accessToken: "",
+      email: "empty@example.test",
+    }));
+    const emptyToken = readCursorAuthFromCandidates([], { homeDir });
+    assert(emptyToken.accessToken === null,
+      "Cursor CLI auth with empty token returns null");
+
+    writeFileSync(cliPath, "not json");
+    const invalidJson = readCursorAuthFromCandidates([], { homeDir });
+    assert(invalidJson.accessToken === null,
+      "Cursor CLI auth with invalid JSON returns null");
+
+    rmSync(cliPath);
+    const neitherPresent = readCursorAuthFromCandidates([], { homeDir });
+    assert(neitherPresent.accessToken === null && neitherPresent.source === null,
+      "Cursor returns null when neither IDE nor CLI auth exists");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
