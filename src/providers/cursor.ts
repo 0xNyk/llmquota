@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, win32 } from "node:path";
 import type { Meter, ProviderSnapshot, RequestAvailability } from "../types.js";
@@ -27,6 +27,8 @@ interface CursorAuth {
 
 export interface CursorAuthResult extends CursorAuth {
   dbPath: string | null;
+  cliAuthPath: string | null;
+  source: "ide_vscdb" | "cli_file" | null;
   error: string | null;
 }
 
@@ -108,9 +110,63 @@ export function cursorStateDbCandidates(opts: CursorStateOptions = {}): string[]
   return [joinPath(configRoot, "Cursor", "User", "globalStorage", "state.vscdb")];
 }
 
-export function readCursorAuthFromCandidates(paths: string[]): CursorAuthResult {
+export function cursorCliAuthCandidates(opts: CursorStateOptions = {}): string[] {
+  const platform = opts.platform ?? process.platform;
+  const env = opts.env ?? process.env;
+  const homeDir = opts.homeDir ?? home();
+  const candidates: string[] = [];
+
+  let joinPath = join;
+  if (platform === "win32") {
+    joinPath = win32.join;
+  }
+
+  // Primary: XDG_CONFIG_HOME/cursor/auth.json (or platform equivalent)
+  let configRoot: string;
+  if (platform === "darwin") {
+    configRoot = join(homeDir, "Library", "Application Support");
+  } else if (platform === "win32") {
+    configRoot = env.APPDATA?.trim() || joinPath(homeDir, "AppData", "Roaming");
+  } else {
+    configRoot = env.XDG_CONFIG_HOME?.trim() || join(homeDir, ".config");
+  }
+  candidates.push(joinPath(configRoot, "cursor", "auth.json"));
+
+  // Fallback: ~/.cursor/auth.json (legacy/alternate location)
+  if (platform !== "win32") {
+    candidates.push(join(homeDir, ".cursor", "auth.json"));
+  } else {
+    candidates.push(joinPath(homeDir, ".cursor", "auth.json"));
+  }
+
+  return candidates;
+}
+
+function readCursorCliAuthFile(path: string): Pick<CursorAuth, "accessToken" | "email"> | null {
+  try {
+    if (!existsSync(path)) return null;
+    const content = readFileSync(path, "utf8");
+    const auth = JSON.parse(content) as {
+      accessToken?: unknown;
+      email?: unknown;
+    };
+    return {
+      accessToken: typeof auth.accessToken === "string" ? auth.accessToken : null,
+      email: typeof auth.email === "string" ? auth.email : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function readCursorAuthFromCandidates(
+  paths: string[],
+  opts: CursorStateOptions = {},
+): CursorAuthResult {
   let lastError: string | null = null;
   let failedPath: string | null = null;
+
+  // Try IDE state.vscdb first
   for (const dbPath of paths) {
     if (!existsSync(dbPath)) continue;
     failedPath = dbPath;
@@ -136,6 +192,8 @@ export function readCursorAuthFromCandidates(paths: string[]): CursorAuthResult 
         subscriptionStatus: get("cursorAuth/stripeSubscriptionStatus"),
         pendingCancellationDate,
         dbPath,
+        cliAuthPath: null,
+        source: "ide_vscdb",
         error: null,
       };
     } catch (error) {
@@ -144,6 +202,27 @@ export function readCursorAuthFromCandidates(paths: string[]): CursorAuthResult 
       db?.close();
     }
   }
+
+  // Fall back to CLI auth.json candidates
+  const cliAuthCandidates = cursorCliAuthCandidates(opts);
+  for (const cliAuthPath of cliAuthCandidates) {
+    const cliFileAuth = readCursorCliAuthFile(cliAuthPath);
+    if (cliFileAuth?.accessToken) {
+      return {
+        accessToken: cliFileAuth.accessToken,
+        email: cliFileAuth.email,
+        membership: null,
+        subscriptionStatus: null,
+        pendingCancellationDate: null,
+        dbPath: failedPath,
+        cliAuthPath,
+        source: "cli_file",
+        error: null,
+      };
+    }
+  }
+
+  const existingCliPath = cliAuthCandidates.find((p) => existsSync(p)) ?? null;
   return {
     accessToken: null,
     email: null,
@@ -151,6 +230,8 @@ export function readCursorAuthFromCandidates(paths: string[]): CursorAuthResult 
     subscriptionStatus: null,
     pendingCancellationDate: null,
     dbPath: failedPath,
+    cliAuthPath: existingCliPath,
+    source: null,
     error: lastError,
   };
 }
@@ -191,11 +272,11 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
     return base;
   }
 
-  if (auth.error) {
+  if (auth.error && !auth.source) {
     base.auth = "error";
     base.error = "Cursor local state database is unreadable";
     base.source = "cursor_local_state";
-    base.hint = "Close and re-open Cursor; its local state database could not be read.";
+    base.hint = "Close and re-open Cursor IDE, or sign in with `cursor-agent login`.";
     return base;
   }
 
@@ -212,7 +293,6 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
   base.account = auth.email;
 
   if (auth.pendingCancellationDate) {
-    // Cursor keeps current membership until period end; destination tier is rarely local.
     base.planChange = {
       nextPlan: null,
       nextCost: "$0",
@@ -223,7 +303,10 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
   }
 
   if (!auth.accessToken) {
-    base.hint = "Sign in to the Cursor IDE (usage token lives in local state.vscdb).";
+    const sourceHint = auth.source === "cli_file"
+      ? "CLI auth.json found but missing token"
+      : "Sign in to Cursor IDE or run `cursor-agent login`";
+    base.hint = sourceHint;
     return base;
   }
 
