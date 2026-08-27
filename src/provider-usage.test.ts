@@ -695,6 +695,17 @@ providers: {}
     assert(linuxCliCandidates[1] === join(linuxHome, ".cursor", "auth.json"),
       "Cursor CLI auth fallback path on Linux is .cursor/auth.json");
 
+    const customXdgDir = join(linuxHome, "custom-xdg");
+    const xdgOverride = cursorCliAuthCandidates({
+      homeDir: linuxHome,
+      platform: "linux",
+      env: { XDG_CONFIG_HOME: customXdgDir },
+    });
+    assert(xdgOverride[0] === join(customXdgDir, "cursor", "auth.json"),
+      "Cursor CLI auth honors XDG_CONFIG_HOME when set");
+    assert(xdgOverride[1] === join(linuxHome, ".cursor", "auth.json"),
+      "Cursor CLI auth fallback path remains .cursor/auth.json even with XDG override");
+
     const xdgPath = linuxCliCandidates[0]!;
     writeFileSync(xdgPath, JSON.stringify({
       accessToken: "xdg-token-linux",
