@@ -683,7 +683,11 @@ providers: {}
     mkdirSync(linuxConfigDir, { recursive: true });
     mkdirSync(legacyCursorDir, { recursive: true });
 
-    const linuxCliCandidates = cursorCliAuthCandidates({ homeDir: linuxHome, platform: "linux" });
+    const linuxCliCandidates = cursorCliAuthCandidates({
+      homeDir: linuxHome,
+      platform: "linux",
+      env: {},
+    });
     assert(linuxCliCandidates.length === 2,
       "Cursor CLI auth has two candidate paths on Linux");
     assert(linuxCliCandidates[0] === join(linuxHome, ".config", "cursor", "auth.json"),
@@ -697,7 +701,11 @@ providers: {}
       email: "xdg@linux.test",
     }));
 
-    const xdgAuth = readCursorAuthFromCandidates([], { homeDir: linuxHome, platform: "linux" });
+    const xdgAuth = readCursorAuthFromCandidates([], {
+      homeDir: linuxHome,
+      platform: "linux",
+      env: {},
+    });
     assert(xdgAuth.accessToken === "xdg-token-linux" && xdgAuth.email === "xdg@linux.test",
       "Cursor CLI XDG auth.json is read when IDE state.vscdb is absent on Linux");
     assert(xdgAuth.source === "cli_file",
@@ -711,14 +719,22 @@ providers: {}
       email: "legacy@linux.test",
     }));
 
-    const bothCliPresent = readCursorAuthFromCandidates([], { homeDir: linuxHome, platform: "linux" });
+    const bothCliPresent = readCursorAuthFromCandidates([], {
+      homeDir: linuxHome,
+      platform: "linux",
+      env: {},
+    });
     assert(bothCliPresent.accessToken === "xdg-token-linux",
       "Cursor prefers XDG CLI auth when both XDG and legacy paths exist");
     assert(bothCliPresent.cliAuthPath === xdgPath,
       "Cursor returns XDG path when both CLI paths exist");
 
     rmSync(xdgPath);
-    const legacyOnly = readCursorAuthFromCandidates([], { homeDir: linuxHome, platform: "linux" });
+    const legacyOnly = readCursorAuthFromCandidates([], {
+      homeDir: linuxHome,
+      platform: "linux",
+      env: {},
+    });
     assert(legacyOnly.accessToken === "legacy-token-linux",
       "Cursor falls back to legacy .cursor/auth.json when XDG path is absent");
     assert(legacyOnly.cliAuthPath === legacyPath,
@@ -736,7 +752,11 @@ providers: {}
       db.close();
     }
 
-    const bothPresent = readCursorAuthFromCandidates([validDb], { homeDir: linuxHome, platform: "linux" });
+    const bothPresent = readCursorAuthFromCandidates([validDb], {
+      homeDir: linuxHome,
+      platform: "linux",
+      env: {},
+    });
     assert(bothPresent.accessToken === "ide-token-456" && bothPresent.email === "ide@example.test",
       "Cursor IDE state.vscdb is preferred when both IDE and CLI auth exist");
     assert(bothPresent.source === "ide_vscdb",
@@ -749,7 +769,11 @@ providers: {}
 
     const malformedDb = join(linuxHome, "malformed.vscdb");
     writeFileSync(malformedDb, "not sqlite");
-    const cliFallback = readCursorAuthFromCandidates([malformedDb], { homeDir: linuxHome, platform: "linux" });
+    const cliFallback = readCursorAuthFromCandidates([malformedDb], {
+      homeDir: linuxHome,
+      platform: "linux",
+      env: {},
+    });
     assert(cliFallback.accessToken === "xdg-token-linux",
       "Cursor falls back to CLI auth when IDE state.vscdb is malformed");
     assert(cliFallback.source === "cli_file",
@@ -763,18 +787,30 @@ providers: {}
       accessToken: "",
       email: "empty2@example.test",
     }));
-    const emptyToken = readCursorAuthFromCandidates([], { homeDir: linuxHome, platform: "linux" });
+    const emptyToken = readCursorAuthFromCandidates([], {
+      homeDir: linuxHome,
+      platform: "linux",
+      env: {},
+    });
     assert(emptyToken.accessToken === null,
       "Cursor CLI auth with empty token returns null");
 
     writeFileSync(xdgPath, "not json");
-    const invalidJson = readCursorAuthFromCandidates([], { homeDir: linuxHome, platform: "linux" });
+    const invalidJson = readCursorAuthFromCandidates([], {
+      homeDir: linuxHome,
+      platform: "linux",
+      env: {},
+    });
     assert(invalidJson.accessToken === null,
       "Cursor CLI auth with invalid JSON returns null");
 
     rmSync(xdgPath);
     rmSync(legacyPath);
-    const neitherPresent = readCursorAuthFromCandidates([], { homeDir: linuxHome, platform: "linux" });
+    const neitherPresent = readCursorAuthFromCandidates([], {
+      homeDir: linuxHome,
+      platform: "linux",
+      env: {},
+    });
     assert(neitherPresent.accessToken === null && neitherPresent.source === null,
       "Cursor returns null when neither IDE nor CLI auth exists");
   } finally {
@@ -784,7 +820,11 @@ providers: {}
   const macDir = mkdtempSync(join(tmpdir(), "llmquota-cursor-cli-mac-"));
   try {
     const macHome = macDir;
-    const macCliCandidates = cursorCliAuthCandidates({ homeDir: macHome, platform: "darwin" });
+    const macCliCandidates = cursorCliAuthCandidates({
+      homeDir: macHome,
+      platform: "darwin",
+      env: {},
+    });
     assert(macCliCandidates.length === 2,
       "Cursor CLI auth has two candidate paths on macOS");
     assert(macCliCandidates[0] === join(macHome, "Library", "Application Support", "cursor", "auth.json"),
