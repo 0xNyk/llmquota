@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, win32 } from "node:path";
-import { execSync } from "node:child_process";
 import type { Meter, ProviderSnapshot, RequestAvailability } from "../types.js";
 import { baseSnapshot } from "../snapshot.js";
 import {
@@ -29,7 +28,7 @@ interface CursorAuth {
 export interface CursorAuthResult extends CursorAuth {
   dbPath: string | null;
   cliAuthPath: string | null;
-  source: "ide_vscdb" | "cli_file" | "cli_keychain" | null;
+  source: "ide_vscdb" | "cli_file" | null;
   error: string | null;
 }
 
@@ -111,9 +110,36 @@ export function cursorStateDbCandidates(opts: CursorStateOptions = {}): string[]
   return [joinPath(configRoot, "Cursor", "User", "globalStorage", "state.vscdb")];
 }
 
-export function cursorCliAuthPath(opts: CursorStateOptions = {}): string {
+export function cursorCliAuthCandidates(opts: CursorStateOptions = {}): string[] {
+  const platform = opts.platform ?? process.platform;
+  const env = opts.env ?? process.env;
   const homeDir = opts.homeDir ?? home();
-  return join(homeDir, ".cursor", "auth.json");
+  const candidates: string[] = [];
+
+  let joinPath = join;
+  if (platform === "win32") {
+    joinPath = win32.join;
+  }
+
+  // Primary: XDG_CONFIG_HOME/cursor/auth.json (or platform equivalent)
+  let configRoot: string;
+  if (platform === "darwin") {
+    configRoot = join(homeDir, "Library", "Application Support");
+  } else if (platform === "win32") {
+    configRoot = env.APPDATA?.trim() || joinPath(homeDir, "AppData", "Roaming");
+  } else {
+    configRoot = env.XDG_CONFIG_HOME?.trim() || join(homeDir, ".config");
+  }
+  candidates.push(joinPath(configRoot, "cursor", "auth.json"));
+
+  // Fallback: ~/.cursor/auth.json (legacy/alternate location)
+  if (platform !== "win32") {
+    candidates.push(join(homeDir, ".cursor", "auth.json"));
+  } else {
+    candidates.push(joinPath(homeDir, ".cursor", "auth.json"));
+  }
+
+  return candidates;
 }
 
 function readCursorCliAuthFile(path: string): Pick<CursorAuth, "accessToken" | "email"> | null {
@@ -128,19 +154,6 @@ function readCursorCliAuthFile(path: string): Pick<CursorAuth, "accessToken" | "
       accessToken: typeof auth.accessToken === "string" ? auth.accessToken : null,
       email: typeof auth.email === "string" ? auth.email : null,
     };
-  } catch {
-    return null;
-  }
-}
-
-function readCursorCliKeychain(platform: NodeJS.Platform = process.platform): Pick<CursorAuth, "accessToken"> | null {
-  if (platform !== "darwin") return null;
-  try {
-    const token = execSync(
-      'security find-generic-password -s cursor-access-token -a cursor-user -w',
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
-    ).trim();
-    return token ? { accessToken: token } : null;
   } catch {
     return null;
   }
@@ -190,42 +203,26 @@ export function readCursorAuthFromCandidates(
     }
   }
 
-  // Fall back to CLI auth.json
-  const cliAuthPath = cursorCliAuthPath(opts);
-  const cliFileAuth = readCursorCliAuthFile(cliAuthPath);
-  if (cliFileAuth?.accessToken) {
-    return {
-      accessToken: cliFileAuth.accessToken,
-      email: cliFileAuth.email,
-      membership: null,
-      subscriptionStatus: null,
-      pendingCancellationDate: null,
-      dbPath: failedPath,
-      cliAuthPath,
-      source: "cli_file",
-      error: null,
-    };
-  }
-
-  // Fall back to macOS keychain (CLI default on macOS)
-  const platform = opts.platform ?? process.platform;
-  if (platform === "darwin") {
-    const keychainAuth = readCursorCliKeychain(platform);
-    if (keychainAuth?.accessToken) {
+  // Fall back to CLI auth.json candidates
+  const cliAuthCandidates = cursorCliAuthCandidates(opts);
+  for (const cliAuthPath of cliAuthCandidates) {
+    const cliFileAuth = readCursorCliAuthFile(cliAuthPath);
+    if (cliFileAuth?.accessToken) {
       return {
-        accessToken: keychainAuth.accessToken,
-        email: null,
+        accessToken: cliFileAuth.accessToken,
+        email: cliFileAuth.email,
         membership: null,
         subscriptionStatus: null,
         pendingCancellationDate: null,
         dbPath: failedPath,
-        cliAuthPath: null,
-        source: "cli_keychain",
+        cliAuthPath,
+        source: "cli_file",
         error: null,
       };
     }
   }
 
+  const existingCliPath = cliAuthCandidates.find((p) => existsSync(p)) ?? null;
   return {
     accessToken: null,
     email: null,
@@ -233,7 +230,7 @@ export function readCursorAuthFromCandidates(
     subscriptionStatus: null,
     pendingCancellationDate: null,
     dbPath: failedPath,
-    cliAuthPath: existsSync(cliAuthPath) ? cliAuthPath : null,
+    cliAuthPath: existingCliPath,
     source: null,
     error: lastError,
   };
@@ -308,9 +305,7 @@ export async function collectCursor(): Promise<ProviderSnapshot> {
   if (!auth.accessToken) {
     const sourceHint = auth.source === "cli_file"
       ? "CLI auth.json found but missing token"
-      : auth.source === "cli_keychain"
-        ? "CLI keychain entry found but empty"
-        : "Sign in to Cursor IDE or run `cursor-agent login`";
+      : "Sign in to Cursor IDE or run `cursor-agent login`";
     base.hint = sourceHint;
     return base;
   }
