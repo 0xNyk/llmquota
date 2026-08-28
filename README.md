@@ -4,6 +4,10 @@
   <img src="docs/assets/llmquota-arena.png" alt="llmquota arena TUI: Claude, Codex, Cursor and Hermes ready, Grok on weekly cooldown" width="900">
 </p>
 
+<p align="center">
+  <a href="docs/assets/llmquota-readme-card.png">Social preview</a>
+</p>
+
 [![CI](https://github.com/0xNyk/llmquota/actions/workflows/ci.yml/badge.svg)](https://github.com/0xNyk/llmquota/actions/workflows/ci.yml)
 [![MIT](https://img.shields.io/badge/license-MIT-6ef2a8.svg)](LICENSE)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-339933.svg?logo=node.js&logoColor=white)](package.json)
