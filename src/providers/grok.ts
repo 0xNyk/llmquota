@@ -572,7 +572,7 @@ export function grokMissingRefreshTokenErrorForTest(path: string): string {
 async function fetchGrokCredits(entry: GrokAuthEntry, version: string | null) {
   return fetchJson("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
     headers: {
-      Authorization: `${["Bear", "er"].join("")} ${entry.key}`,
+      Authorization: `Bearer ${entry.key}`,
       Accept: "application/json",
       "X-XAI-Token-Auth": "xai-grok-cli",
       "x-userid": entry.user_id || "",
