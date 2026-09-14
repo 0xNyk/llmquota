@@ -4,3 +4,4 @@ dist/
 .devgod/
 *.log
 .DS_Store
+config.bat

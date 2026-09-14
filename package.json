@@ -56,7 +56,9 @@
   "packageManager": "pnpm@11.8.0",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^22.15.0",
+    "@types/node": "^22.20.2",
+    "dotenv": "^8.2.0",
+    "node-fetch": "^3.3.2",
     "tsx": "^4.23.12",
     "typescript": "^5.8.3"
   }
